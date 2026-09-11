@@ -64,7 +64,7 @@ MEMORY_CAPACITY = 100000
 RANDOM_OPPONENT_PROB = 0.20
 
 # Total number of game episodes to complete during the full training session
-TOTAL_EPISODES = 2000000
+TOTAL_EPISODES = 200000
 
 # Frequency of console logging outputs measured in completed game episodes
 LOG_INTERVAL = 2000
