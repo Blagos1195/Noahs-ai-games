@@ -229,11 +229,11 @@ def playGame():
             stats["total_games"] += 1
             break
 
-
-while True:
-    playGame()
-    displayStats(stats)
-    again = input("Play another game? (y/n): ").strip().lower()
-    if again != "y":
-        print("\nThanks for playing!")
-        break
+if __name__ == "__main__":
+    while True:
+        playGame()
+        displayStats(stats)
+        again = input("Play another game? (y/n): ").strip().lower()
+        if again != "y":
+            print("\nThanks for playing!")
+            break
