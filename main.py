@@ -180,6 +180,82 @@ def get_valid_cols_single(board):
     return np.where(board[0] == 0)[0]
 
 
+OPENING_PATTERNS = {
+    "center": [3, 2, 4, 1, 5, 0, 6],
+    "left_right": [0, 6, 1, 5, 2, 4, 3],
+    "mirror": [3, 4, 2, 5, 1, 6, 0],
+    "bottom_row": [3, 3, 3, 3],
+}
+
+
+def get_opening_move(board, player_symbol, rule_name=None):
+    occupied = np.count_nonzero(board != 0)
+    if occupied >= 4:
+        return None
+
+    if rule_name is None:
+        rule_name = r.choice(list(OPENING_PATTERNS.keys()))
+
+    valid_cols = get_valid_cols_single(board)
+    pattern = OPENING_PATTERNS[rule_name]
+    for col in pattern:
+        if col in valid_cols:
+            return int(col)
+    return None
+
+
+def sample_role_config():
+    x_is_ai = r.random() < 0.7
+    o_is_ai = r.random() < 0.7
+    if not x_is_ai and not o_is_ai:
+        x_is_ai = True
+    return x_is_ai, o_is_ai
+
+
+def sample_opening_rules():
+    rules = {
+        "X": r.choice(list(OPENING_PATTERNS.keys())) if r.random() < 0.5 else None,
+        "O": r.choice(list(OPENING_PATTERNS.keys())) if r.random() < 0.5 else None,
+    }
+    if rules["X"] is None and rules["O"] is None:
+        rules[r.choice(["X", "O"])] = r.choice(list(OPENING_PATTERNS.keys()))
+    return rules
+
+
+def sample_role_pair():
+    """Each AI file gets a whole-game mode: 25% random, 25% opening, 50% neural.
+    Incompatible pairings are resolved by switching one side to the neural mode,
+    while both players remain AI throughout the match."""
+    x_role = r.choices(["random", "opening", "neural"], weights=[0.25, 0.25, 0.5], k=1)[0]
+    o_role = r.choices(["random", "opening", "neural"], weights=[0.25, 0.25, 0.5], k=1)[0]
+
+    while (
+        (x_role == "opening" and o_role == "opening")
+        or (x_role == "random" and o_role == "random")
+        or (x_role == "opening" and o_role == "random")
+        or (x_role == "random" and o_role == "opening")
+    ):
+        if x_role == "opening" and o_role == "opening":
+            if r.random() < 0.5:
+                x_role = "neural"
+            else:
+                o_role = "neural"
+        elif x_role == "random" and o_role == "random":
+            if r.random() < 0.5:
+                x_role = "neural"
+            else:
+                o_role = "neural"
+        elif (x_role == "opening" and o_role == "random") or (x_role == "random" and o_role == "opening"):
+            if r.random() < 0.5:
+                x_role = "neural"
+            else:
+                o_role = "neural"
+        else:
+            break
+
+    return x_role, o_role
+
+
 class LearningAgent:
     def __init__(self, model_file, player_symbol):
         # Target path for saving and loading the agent's weight file
@@ -326,11 +402,47 @@ def run_vectorized_training(agent_x, agent_o):
         # Current exploration rate governing random move probability
         epsilon = max(0.05, 1.0 - (completed_episodes / (TOTAL_EPISODES * 0.8)))
 
+        # Randomly swap which saved model file plays as X and which plays as O.
+        swap_side_assignment = r.random() < 0.5
+        x_agent = agent_o if swap_side_assignment else agent_x
+        o_agent = agent_x if swap_side_assignment else agent_o
+
+        x_roles = np.array([sample_role_pair()[0] for _ in range(PARALLEL_GAMES)])
+        o_roles = np.array([sample_role_pair()[1] for _ in range(PARALLEL_GAMES)])
+
+        x_is_ai = np.array([role != "random" for role in x_roles], dtype=bool)
+        o_is_ai = np.array([role != "random" for role in o_roles], dtype=bool)
+
+        x_opening_rules = np.array([
+            r.choice(list(OPENING_PATTERNS.keys())) if role == "opening" else None
+            for role in x_roles
+        ])
+        o_opening_rules = np.array([
+            r.choice(list(OPENING_PATTERNS.keys())) if role == "opening" else None
+            for role in o_roles
+        ])
+
         # Encoded tensor state representation before Player X takes an action
         states_x_before = batch_boards_to_tensor(boards)
 
         # Selected column choices for Player X across all parallel environments
-        cols_x = agent_x.select_batch_actions(boards, epsilon, force_random_mask=is_random_x)
+        cols_x = np.zeros(PARALLEL_GAMES, dtype=np.int64)
+        for i in range(PARALLEL_GAMES):
+            valid_cols = np.where(boards[i, 0] == 0)[0]
+            if len(valid_cols) == 0:
+                cols_x[i] = 0
+                continue
+
+            if np.count_nonzero(boards[i] != 0) < 4 and x_opening_rules[i] is not None:
+                move = get_opening_move(boards[i], "X", x_opening_rules[i])
+                if move is not None:
+                    cols_x[i] = int(move)
+                    continue
+
+            if x_is_ai[i]:
+                cols_x[i] = x_agent.select_batch_actions(boards[i : i + 1], epsilon, force_random_mask=None)[0]
+            else:
+                cols_x[i] = int(r.choice(valid_cols))
 
         for i in range(PARALLEL_GAMES):
             col = cols_x[i]
@@ -351,7 +463,7 @@ def run_vectorized_training(agent_x, agent_o):
 
         for i in range(PARALLEL_GAMES):
             if x_wins[i]:
-                agent_x.memory.push(
+                x_agent.memory.push(
                     states_x_before[i], cols_x[i], 1.0, states_after_x[i], 1.0
                 )
                 wins_x += 1
@@ -370,7 +482,23 @@ def run_vectorized_training(agent_x, agent_o):
         states_o_before = batch_boards_to_tensor(boards)
 
         # Selected column choices for Player O across all parallel environments
-        cols_o = agent_o.select_batch_actions(boards, epsilon, force_random_mask=is_random_o)
+        cols_o = np.zeros(PARALLEL_GAMES, dtype=np.int64)
+        for i in range(PARALLEL_GAMES):
+            valid_cols = np.where(boards[i, 0] == 0)[0]
+            if len(valid_cols) == 0:
+                cols_o[i] = 0
+                continue
+
+            if np.count_nonzero(boards[i] != 0) < 4 and o_opening_rules[i] is not None:
+                move = get_opening_move(boards[i], "O", o_opening_rules[i])
+                if move is not None:
+                    cols_o[i] = int(move)
+                    continue
+
+            if o_is_ai[i]:
+                cols_o[i] = o_agent.select_batch_actions(boards[i : i + 1], epsilon, force_random_mask=None)[0]
+            else:
+                cols_o[i] = int(r.choice(valid_cols))
 
         for i in range(PARALLEL_GAMES):
             col = cols_o[i]
@@ -391,7 +519,7 @@ def run_vectorized_training(agent_x, agent_o):
 
         for i in range(PARALLEL_GAMES):
             if o_wins[i]:
-                agent_o.memory.push(
+                o_agent.memory.push(
                     states_o_before[i], cols_o[i], 1.0, states_after_o[i], 1.0
                 )
                 wins_o += 1
