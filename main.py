@@ -8,36 +8,84 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
+# Number of rows on the Connect 4 board
 ROWS = 6
+
+# Number of columns on the Connect 4 board
 COLUMNS = 7
 
-MODEL_FILE_X = "connect4_dqn_x.pth"
-MODEL_FILE_O = "connect4_dqn_o.pth"
+# Default Google Drive directory path for saving trained model weights
+GDRIVE_DIR = r"G:\My Drive\CODE"
 
+if os.path.exists(GDRIVE_DIR):
+    # Directory path used for saving and loading model checkpoints
+    MODEL_DIR = GDRIVE_DIR
+else:
+    MODEL_DIR = "saved_models"
+    os.makedirs(MODEL_DIR, exist_ok=True)
+
+# File path for Player X's model weights
+MODEL_FILE_X = os.path.join(MODEL_DIR, "connect4_dqn_x.pth")
+
+# File path for Player O's model weights
+MODEL_FILE_O = os.path.join(MODEL_DIR, "connect4_dqn_o.pth")
+
+# Number of convolutional layers in the neural network architecture
 NUM_CONV_LAYERS = 2
+
+# Number of fully connected layers in the neural network architecture
 NUM_FC_LAYERS = 1
+
+# Number of output channels for each convolutional layer
 CONV_CHANNELS = 32
+
+# Dimension (number of nodes) of the hidden fully connected layer
 FC_DIM = 128
 
+# Size of mini-batches sampled from replay memory during neural network optimization
 BATCH_SIZE = 512
+
+# Number of game instances running simultaneously during vectorized training
 PARALLEL_GAMES = 512
+
+# Frequency of optimization steps measured in environment interaction steps
 TRAIN_EVERY_STEPS = 8
+
+# Learning rate for the Adam optimizer
 LEARNING_RATE = 0.0003
+
+# Discount factor for future rewards in the Q-learning update rule
 GAMMA = 0.9999
+
+# Maximum number of transitions stored in the experience replay buffer
 MEMORY_CAPACITY = 100000
 
+# Probability of assigning a completely random opponent during self-play
 RANDOM_OPPONENT_PROB = 0.20
 
+# Total number of game episodes to complete during the full training session
 TOTAL_EPISODES = 2000000
+
+# Frequency of console logging outputs measured in completed game episodes
 LOG_INTERVAL = 2000
 
+# Number of CPU cores available on the system
 NUM_CORES = os.cpu_count()
 if NUM_CORES and NUM_CORES > 0:
     torch.set_num_threads(NUM_CORES)
     torch.set_num_interop_threads(NUM_CORES)
 
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+if torch.cuda.is_available():
+    # PyTorch compute device selected for tensor operations (CUDA GPU, MPS, or CPU)
+    device = torch.device("cuda")
+elif torch.backends.mps.is_available():
+    device = torch.device("mps")
+else:
+    device = torch.device("cpu")
 
+print(f"[INFO] Running on compute hardware: {device.type.upper()}")
+
+# Convolutional filter kernels used to detect 4-in-a-row winning alignments
 WIN_KERNELS = torch.zeros((4, 1, 4, 4), dtype=torch.float32)
 WIN_KERNELS[0, 0, 0, :] = 1.0
 WIN_KERNELS[1, 0, :, 0] = 1.0
@@ -134,11 +182,18 @@ def get_valid_cols_single(board):
 
 class LearningAgent:
     def __init__(self, model_file, player_symbol):
+        # Target path for saving and loading the agent's weight file
         self.model_file = model_file
+
+        # Player identity symbol ('X' or 'O')
         self.symbol = player_symbol
+
+        # Primary neural network used for selecting actions and receiving weight updates
         self.net = DynamicDQN(
             NUM_CONV_LAYERS, NUM_FC_LAYERS, CONV_CHANNELS, FC_DIM, ROWS, COLUMNS
         ).to(device)
+
+        # Target network used to stabilize Q-value target calculations
         self.target_net = DynamicDQN(
             NUM_CONV_LAYERS, NUM_FC_LAYERS, CONV_CHANNELS, FC_DIM, ROWS, COLUMNS
         ).to(device)
@@ -153,9 +208,16 @@ class LearningAgent:
         self.net.train()
         self.target_net.eval()
 
+        # Adam optimizer instance managing gradient descent updates for the policy network
         self.optimizer = optim.Adam(self.net.parameters(), lr=LEARNING_RATE)
+
+        # Experience replay buffer instance holding transition tuples
         self.memory = ReplayBuffer(capacity=MEMORY_CAPACITY)
+
+        # Loss function calculating mean squared error between estimated and target Q-values
         self.loss_fn = nn.MSELoss()
+
+        # Counter tracking the total number of environment interactions performed
         self.step_counter = 0
 
     def select_single_action(self, board, epsilon=0.0):
@@ -221,14 +283,29 @@ class LearningAgent:
     def save(self):
         self.target_net.load_state_dict(self.net.state_dict())
         torch.save(self.net.state_dict(), self.model_file)
+        print(f"[INFO] Saved weights to {self.model_file}")
 
 
 def run_vectorized_training(agent_x, agent_o):
+    # Total count of games finished across all parallel workers
     completed_episodes = 0
+
+    # Total completed episode count at the time of the previous log output
     episodes_at_last_log = 0
 
-    wins_x, wins_o, ties = 0, 0, 0
+    # Running count of Player X wins within the current logging interval
+    wins_x = 0
+
+    # Running count of Player O wins within the current logging interval
+    wins_o = 0
+
+    # Running count of tied games within the current logging interval
+    ties = 0
+
+    # Timestamp recording the start of the current logging interval
     interval_start_time = time.time()
+
+    # Timestamp recording the start of the entire training execution
     total_start_time = time.time()
 
     print(
@@ -236,15 +313,23 @@ def run_vectorized_training(agent_x, agent_o):
         f" across {PARALLEL_GAMES} environments..."
     )
 
+    # Array storing current board states for all parallel game instances
     boards = np.zeros((PARALLEL_GAMES, ROWS, COLUMNS), dtype=np.int8)
+
+    # Boolean mask flagging whether Player X acts randomly in each parallel game
     is_random_x = np.random.rand(PARALLEL_GAMES) < RANDOM_OPPONENT_PROB
+
+    # Boolean mask flagging whether Player O acts randomly in each parallel game
     is_random_o = np.random.rand(PARALLEL_GAMES) < RANDOM_OPPONENT_PROB
 
     while completed_episodes < TOTAL_EPISODES:
+        # Current exploration rate governing random move probability
         epsilon = max(0.05, 1.0 - (completed_episodes / (TOTAL_EPISODES * 0.8)))
 
+        # Encoded tensor state representation before Player X takes an action
         states_x_before = batch_boards_to_tensor(boards)
 
+        # Selected column choices for Player X across all parallel environments
         cols_x = agent_x.select_batch_actions(boards, epsilon, force_random_mask=is_random_x)
 
         for i in range(PARALLEL_GAMES):
@@ -256,9 +341,12 @@ def run_vectorized_training(agent_x, agent_o):
                         boards[i, r_idx, col] = 1
                         break
 
+        # Encoded tensor state representation after Player X takes an action
         states_after_x = batch_boards_to_tensor(boards)
 
         boards_torch = torch.from_numpy(boards).to(device)
+
+        # Boolean array marking which game instances resulted in a Player X win
         x_wins = check_wins_batch_torch(boards_torch, 1)
 
         for i in range(PARALLEL_GAMES):
@@ -278,8 +366,10 @@ def run_vectorized_training(agent_x, agent_o):
                 is_random_x[i] = r.random() < RANDOM_OPPONENT_PROB
                 is_random_o[i] = r.random() < RANDOM_OPPONENT_PROB
 
+        # Encoded tensor state representation before Player O takes an action
         states_o_before = batch_boards_to_tensor(boards)
 
+        # Selected column choices for Player O across all parallel environments
         cols_o = agent_o.select_batch_actions(boards, epsilon, force_random_mask=is_random_o)
 
         for i in range(PARALLEL_GAMES):
@@ -291,9 +381,12 @@ def run_vectorized_training(agent_x, agent_o):
                         boards[i, r_idx, col] = -1
                         break
 
+        # Encoded tensor state representation after Player O takes an action
         states_after_o = batch_boards_to_tensor(boards)
 
         boards_torch = torch.from_numpy(boards).to(device)
+
+        # Boolean array marking which game instances resulted in a Player O win
         o_wins = check_wins_batch_torch(boards_torch, -1)
 
         for i in range(PARALLEL_GAMES):
@@ -321,12 +414,18 @@ def run_vectorized_training(agent_x, agent_o):
             agent_o.target_net.load_state_dict(agent_o.net.state_dict())
 
         if completed_episodes - episodes_at_last_log >= LOG_INTERVAL:
+            # Number of completed games processed during the current interval
             games_in_interval = completed_episodes - episodes_at_last_log
+
+            # Elapsed time in seconds for the current logging interval
             interval_elapsed = time.time() - interval_start_time
+
+            # Calculated processing speed measured in games completed per second
             actual_gps = (
                 games_in_interval / interval_elapsed if interval_elapsed > 0 else 0
             )
 
+            # Sum of all games ended (wins and ties) during the logging interval
             total_interval_games = wins_x + wins_o + ties
             if total_interval_games > 0:
                 print(
@@ -345,6 +444,7 @@ def run_vectorized_training(agent_x, agent_o):
             episodes_at_last_log = completed_episodes
             interval_start_time = time.time()
 
+    # Total duration of the training session in seconds
     total_time = time.time() - total_start_time
     print(
         f"\n[COMPLETE] Finished {TOTAL_EPISODES} episodes in"
@@ -377,6 +477,7 @@ def get_human_input(board, symbol):
 
 
 def play_interactive_match(agent_x, agent_o, human_player="X"):
+    # NumPy array representing the single interactive game board
     board = np.zeros((ROWS, COLUMNS), dtype=np.int8)
     print(f"\n--- Match Started! Human playing as {human_player} ---")
 
@@ -384,8 +485,10 @@ def play_interactive_match(agent_x, agent_o, human_player="X"):
         print_ascii_board(board)
 
         if human_player == "X":
+            # Column index chosen by human input for Player X
             col_x = get_human_input(board, "X")
         else:
+            # Column index chosen by agent decision for Player X
             col_x = agent_x.select_single_action(board, epsilon=0.0)
             print(f"AI (X) played column {col_x + 1}")
 
@@ -406,8 +509,10 @@ def play_interactive_match(agent_x, agent_o, human_player="X"):
         print_ascii_board(board)
 
         if human_player == "O":
+            # Column index chosen by human input for Player O
             col_o = get_human_input(board, "O")
         else:
+            # Column index chosen by agent decision for Player O
             col_o = agent_o.select_single_action(board, epsilon=0.0)
             print(f"AI (O) played column {col_o + 1}")
 
@@ -427,7 +532,10 @@ def play_interactive_match(agent_x, agent_o, human_player="X"):
 
 
 if __name__ == "__main__":
+    # LearningAgent instance representing Player X
     agent_x = LearningAgent(MODEL_FILE_X, "X")
+
+    # LearningAgent instance representing Player O
     agent_o = LearningAgent(MODEL_FILE_O, "O")
 
     print("\nSelect Operating Mode:")
@@ -435,6 +543,7 @@ if __name__ == "__main__":
     print("2. Human (X) vs AI (O)")
     print("3. AI (X) vs Human (O)")
 
+    # User menu selection input string
     choice = input("Enter choice (1-3): ").strip()
 
     if choice == "1":
