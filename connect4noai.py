@@ -4,13 +4,14 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-VS = 1  #1=Player (X) vs. AI (O) 2=AI (X) vs. Random Computer (O) 3=AI (X) vs. AI (O) 4=Player (X) vs. Player (O) (PvP)
+VS = 1  # 1=Player (X) vs. AI (O) 2=AI (X) vs. Random Computer (O) 3=AI (X) vs. AI (O) 4=Player (X) vs. Player (O) (PvP)
 ROWS = 6
 COLUMNS = 7
 VERBOSE = True
 
-MODEL_FILE_X = "connect4_dqn_o.pth"
-MODEL_FILE_O = "connect4_dqn_x.pth"
+SAVE_DIR = r"G:\My Drive\CODE"
+MODEL_FILE_X = os.path.join(SAVE_DIR, "model_x.pth")
+MODEL_FILE_O = os.path.join(SAVE_DIR, "model_o.pth")
 
 stats = {"X": 0, "O": 0, "ties": 0, "total_games": 0}
 
@@ -18,7 +19,7 @@ device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
 
 class DynamicDQN(nn.Module):
-    def __init__(self, num_conv=2, num_fc=1, conv_channels=32, fc_dim=128, rows=6, cols=7):
+    def __init__(self, num_conv=2, num_fc=1, conv_channels=64, fc_dim=128, rows=6, cols=7):
         super().__init__()
         layers = []
         in_ch = 2
@@ -46,13 +47,14 @@ class DynamicDQN(nn.Module):
 
 ai_models = {}
 for symbol, filepath in [("X", MODEL_FILE_X), ("O", MODEL_FILE_O)]:
-    model = DynamicDQN().to(device)
+    model = DynamicDQN(num_conv=2, num_fc=1, conv_channels=64, fc_dim=128, rows=ROWS, cols=COLUMNS).to(device)
     if os.path.exists(filepath):
         model.load_state_dict(torch.load(filepath, map_location=device, weights_only=True))
         model.eval()
         ai_models[symbol] = model
     else:
         ai_models[symbol] = None
+        print(f"[WARNING] Could not find {filepath}")
 
 
 def board_to_tensor(board):
@@ -79,7 +81,7 @@ def displayStats(stats):
     tie_pct = (stats["ties"] / total) * 100
 
     print("\n" + "=" * 32)
-    print("      LIFETIME STATISTICS      ")
+    print("       LIFETIME STATISTICS      ")
     print("=" * 32)
     print(f"Total Games Played: {total}")
     print(f"Player X Wins:      {stats['X']} ({x_pct:.1f}%)")
@@ -114,7 +116,7 @@ def computerInput(board, COLUMNS, player):
         valid_cols = [c for c in range(COLUMNS) if board[0][c] == "   "]
         model = ai_models.get(player)
 
-        if model is not None:
+        if model is not None and valid_cols:
             board_tensor = board_to_tensor(board).to(device)
             with torch.inference_mode():
                 q_values = model(board_tensor).squeeze(0).cpu().numpy()
@@ -126,23 +128,15 @@ def computerInput(board, COLUMNS, player):
             if VERBOSE:
                 print(f"[VERBOSE] AI ({player}) selected Column {choice + 1}")
             return choice
-        else:
+        elif valid_cols:
             choice = r.choice(valid_cols)
             if VERBOSE:
                 print(f"[VERBOSE] Random Computer ({player}) picked Column {choice + 1}")
             return choice
+        else:
+            return 0
     else:
-        while True:
-            try:
-                column = int(input(f"Player {player} enter a column (1-7): "))
-                if 1 <= column <= COLUMNS and board[0][column - 1] == "   ":
-                    if VERBOSE:
-                        print(f"[VERBOSE] Player selected Column {column} (Index {column-1})")
-                    return column - 1
-                else:
-                    print("invalid input. Please try again.")
-            except ValueError:
-                print("invalid input. Please try again.")
+        return playerInput(board, COLUMNS, player)
 
 
 def checkWin(board, player):
@@ -152,22 +146,11 @@ def checkWin(board, player):
         for c in range(COLUMNS):
             if c <= COLUMNS - 4 and all(board[r_idx][c + i] == target for i in range(4)):
                 return "win"
-
             if r_idx <= ROWS - 4 and all(board[r_idx + i][c] == target for i in range(4)):
                 return "win"
-
-            if (
-                r_idx <= ROWS - 4
-                and c <= COLUMNS - 4
-                and all(board[r_idx + i][c + i] == target for i in range(4))
-            ):
+            if r_idx <= ROWS - 4 and c <= COLUMNS - 4 and all(board[r_idx + i][c + i] == target for i in range(4)):
                 return "win"
-
-            if (
-                r_idx >= 3
-                and c <= COLUMNS - 4
-                and all(board[r_idx - i][c + i] == target for i in range(4))
-            ):
+            if r_idx >= 3 and c <= COLUMNS - 4 and all(board[r_idx - i][c + i] == target for i in range(4)):
                 return "win"
 
     if all(board[0][c] != "   " for c in range(COLUMNS)):
@@ -187,12 +170,12 @@ def placeTile(board, column, player):
 
 
 def playGame():
-    board = [["   " for _ in range(COLUMNS)] for _ in range(ROWS)]
+    board = [['   ' for _ in range(COLUMNS)] for _ in range(ROWS)]
     Running = True
 
     while Running:
         printBoard(board)
-        if VS == 1 or VS == 4:
+        if VS in [1, 4]:
             column = playerInput(board, COLUMNS, "X")
         else:
             column = computerInput(board, COLUMNS, "X")
@@ -213,7 +196,10 @@ def playGame():
             break
 
         printBoard(board)
-        column = computerInput(board, COLUMNS, "O")
+        if VS == 4:
+            column = playerInput(board, COLUMNS, "O")
+        else:
+            column = computerInput(board, COLUMNS, "O")
         result = placeTile(board, column, "O")
 
         if result == "win":
