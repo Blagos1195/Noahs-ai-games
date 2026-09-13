@@ -1,6 +1,8 @@
 import os
 import sys
 import time
+import os
+import shutil
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,10 +23,11 @@ LEARNING_RATE = 0.0005
 GAMMA = 0.99
 MEMORY_CAPACITY = 50000
 TOTAL_EPISODES = 500000
-LOG_INTERVAL = 50000
+LOG_INTERVAL = 256
 OPENING_MOVES_LIMIT = 6
+SAVE_INTERVAL = 10000  # Save checkpoint every N completed episodes
 
-SAVE_DIR = r"G:\My Drive\CODE"
+SAVE_DIR = r"C:\Users\noahl\OneDrive\CODE\connect 4some"
 # =========================================================================
 
 if torch.cuda.is_available():
@@ -136,12 +139,12 @@ def get_clean_state_dict(model):
 
 def save_checkpoint(model_x, model_o):
     os.makedirs(SAVE_DIR, exist_ok=True)
-    x_path = os.path.join(SAVE_DIR, "model_x.pth")
-    o_path = os.path.join(SAVE_DIR, "model_o.pth")
-    
-    torch.save(get_clean_state_dict(model_x), x_path)
-    torch.save(get_clean_state_dict(model_o), o_path)
-    print(f"\n[INFO] Checkpoint saved successfully to {x_path} and {o_path}")
+    for model, name in [(model_x, "model_x.pth"), (model_o, "model_o.pth")]:
+        target_path = os.path.join(SAVE_DIR, name)
+        temp_path = target_path + ".tmp"
+        torch.save(get_clean_state_dict(model), temp_path)
+        shutil.move(temp_path, target_path)
+    print(f"\n[INFO] Checkpoint saved atomically to {SAVE_DIR}")
 
 
 def train():
@@ -152,16 +155,16 @@ def train():
     model_x = NeuralNetwork(ROWS, COLUMNS).to(device)
     model_o = NeuralNetwork(ROWS, COLUMNS).to(device)
 
-    # Load existing checkpoints if present
+    # Load existing checkpoints safely if present
     if os.path.exists(x_path) and os.path.exists(o_path):
-        model_x.load_state_dict(torch.load(x_path, map_location=device))
-        model_o.load_state_dict(torch.load(o_path, map_location=device))
-        print(f"[INFO] Resuming training from checkpoints in {SAVE_DIR}")
+        try:
+            model_x.load_state_dict(torch.load(x_path, map_location=device, weights_only=True))
+            model_o.load_state_dict(torch.load(o_path, map_location=device, weights_only=True))
+            print(f"[INFO] Resuming training from checkpoints in {SAVE_DIR}")
+        except Exception as e:
+            print(f"[WARNING] Could not load checkpoint, starting fresh: {e}")
     else:
         print(f"[INFO] No saved checkpoints found. Starting fresh training run.")
-
-    model_x = NeuralNetwork(ROWS, COLUMNS).to(device)
-    model_o = NeuralNetwork(ROWS, COLUMNS).to(device)
 
     target_x = NeuralNetwork(ROWS, COLUMNS).to(device)
     target_o = NeuralNetwork(ROWS, COLUMNS).to(device)
@@ -333,6 +336,10 @@ def train():
             if completed_episodes % 250 == 0:
                 target_x.load_state_dict(get_clean_state_dict(model_x))
                 target_o.load_state_dict(get_clean_state_dict(model_o))
+
+            # Periodic atomic checkpoint
+            if completed_episodes > 0 and completed_episodes % SAVE_INTERVAL == 0:
+                save_checkpoint(model_x, model_o)
 
             # --- LOGGING WITH ACCURATE PERCENTAGES ---
             if completed_episodes % LOG_INTERVAL == 0 and completed_episodes > 0:
