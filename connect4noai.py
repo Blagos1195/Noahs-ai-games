@@ -15,7 +15,7 @@ MODEL_FILE_O = os.path.join(SAVE_DIR, "model_o.pth")
 
 stats = {"X": 0, "O": 0, "ties": 0, "total_games": 0}
 
-device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 class DynamicDQN(nn.Module):
@@ -49,9 +49,13 @@ ai_models = {}
 for symbol, filepath in [("X", MODEL_FILE_X), ("O", MODEL_FILE_O)]:
     model = DynamicDQN(num_conv=2, num_fc=1, conv_channels=64, fc_dim=128, rows=ROWS, cols=COLUMNS).to(device)
     if os.path.exists(filepath):
-        model.load_state_dict(torch.load(filepath, map_location=device, weights_only=True))
-        model.eval()
-        ai_models[symbol] = model
+        try:
+            model.load_state_dict(torch.load(filepath, map_location=device, weights_only=True))
+            model.eval()
+            ai_models[symbol] = model
+        except Exception as e:
+            ai_models[symbol] = None
+            print(f"[WARNING] Could not safely load {filepath}: {e}")
     else:
         ai_models[symbol] = None
         print(f"[WARNING] Could not find {filepath}")
