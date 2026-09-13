@@ -1,690 +1,365 @@
 import os
-import random as r
+import sys
 import time
-from collections import deque
-import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 
-# Number of rows on the Connect 4 board
-ROWS = 6
+from neural_network import NeuralNetwork
+from replay_memory import TensorReplayBuffer
 
-# Number of columns on the Connect 4 board
+# =========================================================================
+# Hyperparameters & Config
+# =========================================================================
+ROWS = 6
 COLUMNS = 7
 
-# Default Google Drive directory path for saving trained model weights
-GDRIVE_DIR = r"G:\My Drive\CODE"
-
-if os.path.exists(GDRIVE_DIR):
-    # Directory path used for saving and loading model checkpoints
-    MODEL_DIR = GDRIVE_DIR
-else:
-    MODEL_DIR = "saved_models"
-    os.makedirs(MODEL_DIR, exist_ok=True)
-
-# File path for Player X's model weights
-MODEL_FILE_X = os.path.join(MODEL_DIR, "connect4_dqn_x.pth")
-
-# File path for Player O's model weights
-MODEL_FILE_O = os.path.join(MODEL_DIR, "connect4_dqn_o.pth")
-
-# Number of convolutional layers in the neural network architecture
-NUM_CONV_LAYERS = 2
-
-# Number of fully connected layers in the neural network architecture
-NUM_FC_LAYERS = 1
-
-# Number of output channels for each convolutional layer
-CONV_CHANNELS = 32
-
-# Dimension (number of nodes) of the hidden fully connected layer
-FC_DIM = 128
-
-# Size of mini-batches sampled from replay memory during neural network optimization
-BATCH_SIZE = 512
-
-# Number of game instances running simultaneously during vectorized training
-PARALLEL_GAMES = 512
-
-# Frequency of optimization steps measured in environment interaction steps
-TRAIN_EVERY_STEPS = 8
-
-# Learning rate for the Adam optimizer
-LEARNING_RATE = 0.0003
-
-# Discount factor for future rewards in the Q-learning update rule
-GAMMA = 0.9999
-
-# Maximum number of transitions stored in the experience replay buffer
-MEMORY_CAPACITY = 100000
-
-# Probability of assigning a completely random opponent during self-play
-RANDOM_OPPONENT_PROB = 0.20
-
-# Total number of game episodes to complete during the full training session
+PARALLEL_GAMES = None
+BATCH_SIZE = 256
+LEARNING_RATE = 0.0005
+GAMMA = 0.99
+MEMORY_CAPACITY = 50000
 TOTAL_EPISODES = 200000
-
-# Frequency of console logging outputs measured in completed game episodes
 LOG_INTERVAL = 2000
+OPENING_MOVES_LIMIT = 6
 
-# Number of CPU cores available on the system
-NUM_CORES = os.cpu_count()
-if NUM_CORES and NUM_CORES > 0:
-    torch.set_num_threads(NUM_CORES)
-    torch.set_num_interop_threads(NUM_CORES)
+SAVE_DIR = r"G:\My Drive\CODE"
+# =========================================================================
 
 if torch.cuda.is_available():
-    # PyTorch compute device selected for tensor operations (CUDA GPU, MPS, or CPU)
     device = torch.device("cuda")
-elif torch.backends.mps.is_available():
+    if PARALLEL_GAMES is None:
+        PARALLEL_GAMES = 2048
+        BATCH_SIZE = 1024
+    torch.set_float32_matmul_precision("high")
+    print(f"[HARDWARE] Running on NVIDIA GPU (CUDA). Environments: {PARALLEL_GAMES}")
+elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
     device = torch.device("mps")
+    if PARALLEL_GAMES is None:
+        PARALLEL_GAMES = 1024
+        BATCH_SIZE = 512
+    print(f"[HARDWARE] Running on Apple Silicon (MPS). Environments: {PARALLEL_GAMES}")
 else:
     device = torch.device("cpu")
+    if PARALLEL_GAMES is None:
+        PARALLEL_GAMES = 256
+        BATCH_SIZE = 256
+    num_cores = (os.cpu_count() // 2) if os.cpu_count() else 4
+    torch.set_num_threads(max(1, num_cores))
+    torch.set_num_interop_threads(1)
+    print(f"[HARDWARE] Running on CPU ({torch.get_num_threads()} physical threads). Environments: {PARALLEL_GAMES}")
 
-print(f"[INFO] Running on compute hardware: {device.type.upper()}")
-
-# Convolutional filter kernels used to detect 4-in-a-row winning alignments
-WIN_KERNELS = torch.zeros((4, 1, 4, 4), dtype=torch.float32)
+WIN_KERNELS = torch.zeros((4, 1, 4, 4), dtype=torch.float32, device=device)
 WIN_KERNELS[0, 0, 0, :] = 1.0
 WIN_KERNELS[1, 0, :, 0] = 1.0
 WIN_KERNELS[2, 0, torch.arange(4), torch.arange(4)] = 1.0
 WIN_KERNELS[3, 0, torch.arange(4), 3 - torch.arange(4)] = 1.0
-WIN_KERNELS = WIN_KERNELS.to(device)
+
+OPENING_PATTERNS = torch.tensor([
+    [3, 3, 2, 4, 3, 3, 3],
+    [0, 1, 5, 6, 0, 1, 6],
+    [3, 2, 4, 1, 5, 0, 6],
+    [0, 1, 2, 3, 4, 5, 6],
+], dtype=torch.long, device=device)
 
 
-def check_wins_batch_torch(boards_tensor, player_val):
-    player_mask = (boards_tensor == player_val).float().unsqueeze(1)
-    conv_res = F.conv2d(player_mask, WIN_KERNELS)
-    wins = (conv_res == 4.0).flatten(1).any(dim=1)
-    return wins.cpu().numpy()
+def vectorized_check_wins(boards, player_channel):
+    mask = boards[:, player_channel:player_channel+1, :, :]
+    conv_res = F.conv2d(mask, WIN_KERNELS)
+    return (conv_res == 4.0).flatten(1).any(dim=1)
 
 
-class DynamicDQN(nn.Module):
-    def __init__(self, num_conv=2, num_fc=1, conv_channels=32, fc_dim=128, rows=6, cols=7):
-        super().__init__()
-        layers = []
-        in_ch = 2
-        for _ in range(num_conv):
-            layers.append(nn.Conv2d(in_ch, conv_channels, kernel_size=3, padding=1))
-            layers.append(nn.ReLU())
-            in_ch = conv_channels
-        self.conv = nn.Sequential(*layers)
-
-        conv_out_size = conv_channels * rows * cols
-        fc_layers = []
-        in_dim = conv_out_size
-        for _ in range(num_fc):
-            fc_layers.append(nn.Linear(in_dim, fc_dim))
-            fc_layers.append(nn.ReLU())
-            in_dim = fc_dim
-        fc_layers.append(nn.Linear(in_dim, cols))
-        self.fc = nn.Sequential(*fc_layers)
-
-    def forward(self, x):
-        feat = self.conv(x)
-        feat = feat.view(feat.size(0), -1)
-        return self.fc(feat)
+def vectorized_apply_moves(boards, player_channel, actions):
+    batch_idx = torch.arange(PARALLEL_GAMES, device=device)
+    col_heights = (boards.sum(dim=1) != 0).sum(dim=1)
+    target_rows = (ROWS - 1) - col_heights[batch_idx, actions]
+    boards[batch_idx, player_channel, target_rows, actions] = 1.0
 
 
-class ReplayBuffer:
-    def __init__(self, capacity=MEMORY_CAPACITY):
-        self.buffer = deque(maxlen=capacity)
+def resolve_play_styles(num_games, device):
+    probs = torch.tensor([0.25, 0.25, 0.50], device=device)
+    mode_x = torch.multinomial(probs, num_games, replacement=True)
+    mode_o = torch.multinomial(probs, num_games, replacement=True)
 
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+    invalid_pairings = (mode_x < 2) & (mode_o < 2)
+    mode_x[invalid_pairings] = 2
+    mode_o[invalid_pairings] = 2
 
-    def sample(self, batch_size):
-        batch = r.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-        return (
-            torch.stack(states),
-            torch.tensor(actions, dtype=torch.long),
-            torch.tensor(rewards, dtype=torch.float32),
-            torch.stack(next_states),
-            torch.tensor(dones, dtype=torch.float32),
-        )
+    opening_strat_x = torch.randint(0, 4, (num_games,), device=device)
+    opening_strat_o = torch.randint(0, 4, (num_games,), device=device)
 
-    def __len__(self):
-        return len(self.buffer)
+    return mode_x, mode_o, opening_strat_x, opening_strat_o
 
 
-def batch_boards_to_tensor(boards):
-    x_planes = (boards == 1).astype(np.float32)
-    o_planes = (boards == -1).astype(np.float32)
-    stacked = np.stack([x_planes, o_planes], axis=1)
-    return torch.from_numpy(stacked)
+@torch.inference_mode()
+def select_actions_vectorized(net_x, net_o, swap_sides, boards, mode, opening_strat, move_count, epsilon):
+    col_full = (boards[:, 0, 0, :] + boards[:, 1, 0, :]) > 0
+    valid_mask = (~col_full).float()
+
+    q_values = torch.zeros((PARALLEL_GAMES, COLUMNS), device=device)
+    normal_idx = (~swap_sides).nonzero(as_tuple=True)[0]
+    swapped_idx = swap_sides.nonzero(as_tuple=True)[0]
+
+    if len(normal_idx) > 0:
+        q_values[normal_idx] = net_x(boards[normal_idx])
+    if len(swapped_idx) > 0:
+        q_values[swapped_idx] = net_o(boards[swapped_idx])
+
+    q_values[col_full] = -float('inf')
+
+    random_acts = torch.multinomial(valid_mask, 1).squeeze(1)
+    greedy_acts = torch.argmax(q_values, dim=1)
+    select_rand = torch.rand(PARALLEL_GAMES, device=device) < epsilon
+    neural_acts = torch.where(select_rand, random_acts, greedy_acts)
+
+    pure_random_acts = torch.multinomial(valid_mask, 1).squeeze(1)
+
+    if move_count < OPENING_MOVES_LIMIT:
+        preferred_cols = OPENING_PATTERNS[opening_strat, move_count % COLUMNS]
+        is_preferred_valid = ~col_full[torch.arange(PARALLEL_GAMES, device=device), preferred_cols]
+        opening_acts = torch.where(is_preferred_valid, preferred_cols, pure_random_acts)
+    else:
+        opening_acts = neural_acts
+
+    actions = torch.where(mode == 0, pure_random_acts, neural_acts)
+    actions = torch.where(mode == 1, opening_acts, actions)
+
+    return actions
 
 
-def check_win_single(board, player_val):
-    for r_idx in range(ROWS):
-        for c_idx in range(COLUMNS - 3):
-            if np.all(board[r_idx, c_idx : c_idx + 4] == player_val):
-                return True
-    for r_idx in range(ROWS - 3):
-        for c_idx in range(COLUMNS):
-            if np.all(board[r_idx : r_idx + 4, c_idx] == player_val):
-                return True
-    for r_idx in range(ROWS - 3):
-        for c_idx in range(COLUMNS - 3):
-            sub = board[r_idx : r_idx + 4, c_idx : c_idx + 4]
-            if np.all(np.diagonal(sub) == player_val):
-                return True
-            if np.all(np.diagonal(np.fliplr(sub)) == player_val):
-                return True
-    return False
+def get_clean_state_dict(model):
+    if hasattr(model, "_orig_mod"):
+        return model._orig_mod.state_dict()
+    return model.state_dict()
 
 
-def get_valid_cols_single(board):
-    return np.where(board[0] == 0)[0]
+def save_checkpoint(model_x, model_o):
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    x_path = os.path.join(SAVE_DIR, "model_x.pth")
+    o_path = os.path.join(SAVE_DIR, "model_o.pth")
+    
+    torch.save(get_clean_state_dict(model_x), x_path)
+    torch.save(get_clean_state_dict(model_o), o_path)
+    print(f"\n[INFO] Checkpoint saved successfully to {x_path} and {o_path}")
 
 
-OPENING_PATTERNS = {
-    "center": [3, 2, 4, 1, 5, 0, 6],
-    "left_right": [0, 6, 1, 5, 2, 4, 3],
-    "mirror": [3, 4, 2, 5, 1, 6, 0],
-    "bottom_row": [3, 3, 3, 3],
-}
+def train():
+    os.makedirs(SAVE_DIR, exist_ok=True)
+    x_path = os.path.join(SAVE_DIR, "model_x.pth")
+    o_path = os.path.join(SAVE_DIR, "model_o.pth")
 
+    model_x = NeuralNetwork(ROWS, COLUMNS).to(device)
+    model_o = NeuralNetwork(ROWS, COLUMNS).to(device)
 
-def get_opening_move(board, player_symbol, rule_name=None):
-    occupied = np.count_nonzero(board != 0)
-    if occupied >= 4:
-        return None
+    # Load existing checkpoints if present
+    if os.path.exists(x_path) and os.path.exists(o_path):
+        model_x.load_state_dict(torch.load(x_path, map_location=device))
+        model_o.load_state_dict(torch.load(o_path, map_location=device))
+        print(f"[INFO] Resuming training from checkpoints in {SAVE_DIR}")
+    else:
+        print(f"[INFO] No saved checkpoints found. Starting fresh training run.")
 
-    if rule_name is None:
-        rule_name = r.choice(list(OPENING_PATTERNS.keys()))
+    model_x = NeuralNetwork(ROWS, COLUMNS).to(device)
+    model_o = NeuralNetwork(ROWS, COLUMNS).to(device)
 
-    valid_cols = get_valid_cols_single(board)
-    pattern = OPENING_PATTERNS[rule_name]
-    for col in pattern:
-        if col in valid_cols:
-            return int(col)
-    return None
+    target_x = NeuralNetwork(ROWS, COLUMNS).to(device)
+    target_o = NeuralNetwork(ROWS, COLUMNS).to(device)
+    target_x.load_state_dict(get_clean_state_dict(model_x))
+    target_o.load_state_dict(get_clean_state_dict(model_o))
 
+    optimizer_x = optim.Adam(model_x.parameters(), lr=LEARNING_RATE)
+    optimizer_o = optim.Adam(model_o.parameters(), lr=LEARNING_RATE)
 
-def sample_role_config():
-    x_is_ai = r.random() < 0.7
-    o_is_ai = r.random() < 0.7
-    if not x_is_ai and not o_is_ai:
-        x_is_ai = True
-    return x_is_ai, o_is_ai
+    memory_x = TensorReplayBuffer(MEMORY_CAPACITY, device, ROWS, COLUMNS)
+    memory_o = TensorReplayBuffer(MEMORY_CAPACITY, device, ROWS, COLUMNS)
+    loss_fn = nn.MSELoss()
 
+    boards = torch.zeros((PARALLEL_GAMES, 2, ROWS, COLUMNS), dtype=torch.float32, device=device)
+    move_counts = torch.zeros(PARALLEL_GAMES, dtype=torch.long, device=device)
 
-def sample_opening_rules():
-    rules = {
-        "X": r.choice(list(OPENING_PATTERNS.keys())) if r.random() < 0.5 else None,
-        "O": r.choice(list(OPENING_PATTERNS.keys())) if r.random() < 0.5 else None,
-    }
-    if rules["X"] is None and rules["O"] is None:
-        rules[r.choice(["X", "O"])] = r.choice(list(OPENING_PATTERNS.keys()))
-    return rules
+    swap_sides = torch.rand(PARALLEL_GAMES, device=device) < 0.5
+    mode_x, mode_o, strat_x, strat_o = resolve_play_styles(PARALLEL_GAMES, device)
 
-
-def sample_role_pair():
-    """Each AI file gets a whole-game mode: 25% random, 25% opening, 50% neural.
-    Incompatible pairings are resolved by switching one side to the neural mode,
-    while both players remain AI throughout the match."""
-    x_role = r.choices(["random", "opening", "neural"], weights=[0.25, 0.25, 0.5], k=1)[0]
-    o_role = r.choices(["random", "opening", "neural"], weights=[0.25, 0.25, 0.5], k=1)[0]
-
-    while (
-        (x_role == "opening" and o_role == "opening")
-        or (x_role == "random" and o_role == "random")
-        or (x_role == "opening" and o_role == "random")
-        or (x_role == "random" and o_role == "opening")
-    ):
-        if x_role == "opening" and o_role == "opening":
-            if r.random() < 0.5:
-                x_role = "neural"
-            else:
-                o_role = "neural"
-        elif x_role == "random" and o_role == "random":
-            if r.random() < 0.5:
-                x_role = "neural"
-            else:
-                o_role = "neural"
-        elif (x_role == "opening" and o_role == "random") or (x_role == "random" and o_role == "opening"):
-            if r.random() < 0.5:
-                x_role = "neural"
-            else:
-                o_role = "neural"
-        else:
-            break
-
-    return x_role, o_role
-
-
-class LearningAgent:
-    def __init__(self, model_file, player_symbol):
-        # Target path for saving and loading the agent's weight file
-        self.model_file = model_file
-
-        # Player identity symbol ('X' or 'O')
-        self.symbol = player_symbol
-
-        # Primary neural network used for selecting actions and receiving weight updates
-        self.net = DynamicDQN(
-            NUM_CONV_LAYERS, NUM_FC_LAYERS, CONV_CHANNELS, FC_DIM, ROWS, COLUMNS
-        ).to(device)
-
-        # Target network used to stabilize Q-value target calculations
-        self.target_net = DynamicDQN(
-            NUM_CONV_LAYERS, NUM_FC_LAYERS, CONV_CHANNELS, FC_DIM, ROWS, COLUMNS
-        ).to(device)
-
-        if os.path.exists(model_file):
-            self.net.load_state_dict(
-                torch.load(model_file, map_location=device, weights_only=True)
-            )
-            print(f"[INFO] Loaded weights for '{player_symbol}' from {model_file}")
-
-        self.target_net.load_state_dict(self.net.state_dict())
-        self.net.train()
-        self.target_net.eval()
-
-        # Adam optimizer instance managing gradient descent updates for the policy network
-        self.optimizer = optim.Adam(self.net.parameters(), lr=LEARNING_RATE)
-
-        # Experience replay buffer instance holding transition tuples
-        self.memory = ReplayBuffer(capacity=MEMORY_CAPACITY)
-
-        # Loss function calculating mean squared error between estimated and target Q-values
-        self.loss_fn = nn.MSELoss()
-
-        # Counter tracking the total number of environment interactions performed
-        self.step_counter = 0
-
-    def select_single_action(self, board, epsilon=0.0):
-        valid_cols = get_valid_cols_single(board)
-        if r.random() < epsilon:
-            return r.choice(valid_cols)
-        board_tensor = batch_boards_to_tensor(board[np.newaxis, ...]).to(device)
-        with torch.inference_mode():
-            q_values = self.net(board_tensor).squeeze(0).cpu().numpy()
-        masked_q = np.full(COLUMNS, -np.inf)
-        masked_q[valid_cols] = q_values[valid_cols]
-        return np.argmax(masked_q)
-
-    def select_batch_actions(self, boards, epsilon, force_random_mask=None):
-        num_games = len(boards)
-        actions = np.zeros(num_games, dtype=np.int64)
-        batch_tensors = batch_boards_to_tensor(boards).to(device)
-
-        with torch.inference_mode():
-            q_values_batch = self.net(batch_tensors).cpu().numpy()
-
-        for i in range(num_games):
-            valid_cols = np.where(boards[i, 0] == 0)[0]
-            if len(valid_cols) == 0:
-                actions[i] = 0
-                continue
-            use_random = (force_random_mask[i] if force_random_mask is not None else False) or (
-                r.random() < epsilon
-            )
-            if use_random:
-                actions[i] = r.choice(valid_cols)
-            else:
-                masked_q = np.full(COLUMNS, -np.inf)
-                masked_q[valid_cols] = q_values_batch[i, valid_cols]
-                actions[i] = np.argmax(masked_q)
-
-        return actions
-
-    def train_step(self):
-        self.step_counter += 1
-        if self.step_counter % TRAIN_EVERY_STEPS != 0:
-            return
-        if len(self.memory) < BATCH_SIZE:
-            return
-
-        states, actions, rewards, next_states, dones = self.memory.sample(BATCH_SIZE)
-        states = states.to(device)
-        actions = actions.to(device)
-        rewards = rewards.to(device)
-        next_states = next_states.to(device)
-        dones = dones.to(device)
-
-        q_values = self.net(states).gather(1, actions.unsqueeze(1)).squeeze(1)
-        with torch.no_grad():
-            max_next_q = self.target_net(next_states).max(1)[0]
-            target_q_values = rewards + (1 - dones) * GAMMA * max_next_q
-
-        loss = self.loss_fn(q_values, target_q_values)
-        self.optimizer.zero_grad()
-        loss.backward()
-        self.optimizer.step()
-
-    def save(self):
-        self.target_net.load_state_dict(self.net.state_dict())
-        torch.save(self.net.state_dict(), self.model_file)
-        print(f"[INFO] Saved weights to {self.model_file}")
-
-
-def run_vectorized_training(agent_x, agent_o):
-    # Total count of games finished across all parallel workers
     completed_episodes = 0
+    wins_model_x_cnt = 0
+    wins_model_o_cnt = 0
+    draws_cnt = 0
 
-    # Total completed episode count at the time of the previous log output
-    episodes_at_last_log = 0
+    start_time = time.time()
+    print("[INFO] Headless training loop initialized... (Press Ctrl+C at any time to interrupt and save)")
 
-    # Running count of Player X wins within the current logging interval
-    wins_x = 0
+    try:
+        while completed_episodes < TOTAL_EPISODES:
+            epsilon = max(0.05, 1.0 - (completed_episodes / (TOTAL_EPISODES * 0.7)))
 
-    # Running count of Player O wins within the current logging interval
-    wins_o = 0
-
-    # Running count of tied games within the current logging interval
-    ties = 0
-
-    # Timestamp recording the start of the current logging interval
-    interval_start_time = time.time()
-
-    # Timestamp recording the start of the entire training execution
-    total_start_time = time.time()
-
-    print(
-        f"\n[INFO] Running Headless Self-Play on device '{device.type.upper()}'"
-        f" across {PARALLEL_GAMES} environments..."
-    )
-
-    # Array storing current board states for all parallel game instances
-    boards = np.zeros((PARALLEL_GAMES, ROWS, COLUMNS), dtype=np.int8)
-
-    # Boolean mask flagging whether Player X acts randomly in each parallel game
-    is_random_x = np.random.rand(PARALLEL_GAMES) < RANDOM_OPPONENT_PROB
-
-    # Boolean mask flagging whether Player O acts randomly in each parallel game
-    is_random_o = np.random.rand(PARALLEL_GAMES) < RANDOM_OPPONENT_PROB
-
-    while completed_episodes < TOTAL_EPISODES:
-        # Current exploration rate governing random move probability
-        epsilon = max(0.05, 1.0 - (completed_episodes / (TOTAL_EPISODES * 0.8)))
-
-        # Randomly swap which saved model file plays as X and which plays as O.
-        swap_side_assignment = r.random() < 0.5
-        x_agent = agent_o if swap_side_assignment else agent_x
-        o_agent = agent_x if swap_side_assignment else agent_o
-
-        x_roles = np.array([sample_role_pair()[0] for _ in range(PARALLEL_GAMES)])
-        o_roles = np.array([sample_role_pair()[1] for _ in range(PARALLEL_GAMES)])
-
-        x_is_ai = np.array([role != "random" for role in x_roles], dtype=bool)
-        o_is_ai = np.array([role != "random" for role in o_roles], dtype=bool)
-
-        x_opening_rules = np.array([
-            r.choice(list(OPENING_PATTERNS.keys())) if role == "opening" else None
-            for role in x_roles
-        ])
-        o_opening_rules = np.array([
-            r.choice(list(OPENING_PATTERNS.keys())) if role == "opening" else None
-            for role in o_roles
-        ])
-
-        # Encoded tensor state representation before Player X takes an action
-        states_x_before = batch_boards_to_tensor(boards)
-
-        # Selected column choices for Player X across all parallel environments
-        cols_x = np.zeros(PARALLEL_GAMES, dtype=np.int64)
-        for i in range(PARALLEL_GAMES):
-            valid_cols = np.where(boards[i, 0] == 0)[0]
-            if len(valid_cols) == 0:
-                cols_x[i] = 0
-                continue
-
-            if np.count_nonzero(boards[i] != 0) < 4 and x_opening_rules[i] is not None:
-                move = get_opening_move(boards[i], "X", x_opening_rules[i])
-                if move is not None:
-                    cols_x[i] = int(move)
-                    continue
-
-            if x_is_ai[i]:
-                cols_x[i] = x_agent.select_batch_actions(boards[i : i + 1], epsilon, force_random_mask=None)[0]
-            else:
-                cols_x[i] = int(r.choice(valid_cols))
-
-        for i in range(PARALLEL_GAMES):
-            col = cols_x[i]
-            valid_cols = np.where(boards[i, 0] == 0)[0]
-            if len(valid_cols) > 0 and col in valid_cols:
-                for r_idx in range(ROWS - 1, -1, -1):
-                    if boards[i, r_idx, col] == 0:
-                        boards[i, r_idx, col] = 1
-                        break
-
-        # Encoded tensor state representation after Player X takes an action
-        states_after_x = batch_boards_to_tensor(boards)
-
-        boards_torch = torch.from_numpy(boards).to(device)
-
-        # Boolean array marking which game instances resulted in a Player X win
-        x_wins = check_wins_batch_torch(boards_torch, 1)
-
-        for i in range(PARALLEL_GAMES):
-            if x_wins[i]:
-                x_agent.memory.push(
-                    states_x_before[i], cols_x[i], 1.0, states_after_x[i], 1.0
-                )
-                wins_x += 1
-                completed_episodes += 1
-                boards[i] = np.zeros((ROWS, COLUMNS), dtype=np.int8)
-                is_random_x[i] = r.random() < RANDOM_OPPONENT_PROB
-                is_random_o[i] = r.random() < RANDOM_OPPONENT_PROB
-            elif len(np.where(boards[i, 0] == 0)[0]) == 0:
-                ties += 1
-                completed_episodes += 1
-                boards[i] = np.zeros((ROWS, COLUMNS), dtype=np.int8)
-                is_random_x[i] = r.random() < RANDOM_OPPONENT_PROB
-                is_random_o[i] = r.random() < RANDOM_OPPONENT_PROB
-
-        # Encoded tensor state representation before Player O takes an action
-        states_o_before = batch_boards_to_tensor(boards)
-
-        # Selected column choices for Player O across all parallel environments
-        cols_o = np.zeros(PARALLEL_GAMES, dtype=np.int64)
-        for i in range(PARALLEL_GAMES):
-            valid_cols = np.where(boards[i, 0] == 0)[0]
-            if len(valid_cols) == 0:
-                cols_o[i] = 0
-                continue
-
-            if np.count_nonzero(boards[i] != 0) < 4 and o_opening_rules[i] is not None:
-                move = get_opening_move(boards[i], "O", o_opening_rules[i])
-                if move is not None:
-                    cols_o[i] = int(move)
-                    continue
-
-            if o_is_ai[i]:
-                cols_o[i] = o_agent.select_batch_actions(boards[i : i + 1], epsilon, force_random_mask=None)[0]
-            else:
-                cols_o[i] = int(r.choice(valid_cols))
-
-        for i in range(PARALLEL_GAMES):
-            col = cols_o[i]
-            valid_cols = np.where(boards[i, 0] == 0)[0]
-            if len(valid_cols) > 0 and col in valid_cols:
-                for r_idx in range(ROWS - 1, -1, -1):
-                    if boards[i, r_idx, col] == 0:
-                        boards[i, r_idx, col] = -1
-                        break
-
-        # Encoded tensor state representation after Player O takes an action
-        states_after_o = batch_boards_to_tensor(boards)
-
-        boards_torch = torch.from_numpy(boards).to(device)
-
-        # Boolean array marking which game instances resulted in a Player O win
-        o_wins = check_wins_batch_torch(boards_torch, -1)
-
-        for i in range(PARALLEL_GAMES):
-            if o_wins[i]:
-                o_agent.memory.push(
-                    states_o_before[i], cols_o[i], 1.0, states_after_o[i], 1.0
-                )
-                wins_o += 1
-                completed_episodes += 1
-                boards[i] = np.zeros((ROWS, COLUMNS), dtype=np.int8)
-                is_random_x[i] = r.random() < RANDOM_OPPONENT_PROB
-                is_random_o[i] = r.random() < RANDOM_OPPONENT_PROB
-            elif len(np.where(boards[i, 0] == 0)[0]) == 0:
-                ties += 1
-                completed_episodes += 1
-                boards[i] = np.zeros((ROWS, COLUMNS), dtype=np.int8)
-                is_random_x[i] = r.random() < RANDOM_OPPONENT_PROB
-                is_random_o[i] = r.random() < RANDOM_OPPONENT_PROB
-
-        agent_x.train_step()
-        agent_o.train_step()
-
-        if completed_episodes % 1000 < PARALLEL_GAMES:
-            agent_x.target_net.load_state_dict(agent_x.net.state_dict())
-            agent_o.target_net.load_state_dict(agent_o.net.state_dict())
-
-        if completed_episodes - episodes_at_last_log >= LOG_INTERVAL:
-            # Number of completed games processed during the current interval
-            games_in_interval = completed_episodes - episodes_at_last_log
-
-            # Elapsed time in seconds for the current logging interval
-            interval_elapsed = time.time() - interval_start_time
-
-            # Calculated processing speed measured in games completed per second
-            actual_gps = (
-                games_in_interval / interval_elapsed if interval_elapsed > 0 else 0
+            # --- PLAYER X TURN ---
+            states_before_x = boards.clone()
+            actions_x = select_actions_vectorized(
+                model_x, model_o, swap_sides, boards, mode_x, strat_x, move_counts.min().item(), epsilon
             )
+            
+            vectorized_apply_moves(boards, player_channel=0, actions=actions_x)
+            move_counts += 1
+            wins_x = vectorized_check_wins(boards, player_channel=0)
+            draws_x = (boards.sum(dim=1) != 0).all(dim=-1).all(dim=-1) & ~wins_x
 
-            # Sum of all games ended (wins and ties) during the logging interval
-            total_interval_games = wins_x + wins_o + ties
-            if total_interval_games > 0:
-                print(
-                    f"Game {completed_episodes:6d}/{TOTAL_EPISODES} | "
-                    f"X Win: {(wins_x/total_interval_games)*100:5.1f}% | "
-                    f"O Win: {(wins_o/total_interval_games)*100:5.1f}% | "
-                    f"Tie: {(ties/total_interval_games)*100:4.1f}% | "
-                    f"Epsilon: {epsilon:.3f} | "
-                    f"Speed: {actual_gps:6.1f} GPS"
+            if wins_x.any():
+                done_idx = wins_x.nonzero(as_tuple=True)[0]
+                num_wins = len(done_idx)
+
+                x_wins_mask = ~swap_sides[done_idx]
+                o_wins_mask = swap_sides[done_idx]
+                wins_model_x_cnt += x_wins_mask.sum().item()
+                wins_model_o_cnt += o_wins_mask.sum().item()
+
+                memory_x.push_batch(
+                    states_before_x[done_idx], actions_x[done_idx],
+                    torch.ones(num_wins, device=device), boards[done_idx],
+                    torch.ones(num_wins, device=device)
                 )
 
-            agent_x.save()
-            agent_o.save()
+                if 'states_before_o' in locals():
+                    memory_o.push_batch(
+                        states_before_o[done_idx], actions_o[done_idx],
+                        -torch.ones(num_wins, device=device), boards[done_idx],
+                        torch.ones(num_wins, device=device)
+                    )
 
-            wins_x, wins_o, ties = 0, 0, 0
-            episodes_at_last_log = completed_episodes
-            interval_start_time = time.time()
+                boards[done_idx] = 0.0
+                move_counts[done_idx] = 0
+                swap_sides[done_idx] = torch.rand(num_wins, device=device) < 0.5
+                
+                new_mx, new_mo, new_sx, new_so = resolve_play_styles(num_wins, device)
+                mode_x[done_idx], mode_o[done_idx] = new_mx, new_mo
+                strat_x[done_idx], strat_o[done_idx] = new_sx, new_so
+                
+                completed_episodes += num_wins
 
-    # Total duration of the training session in seconds
-    total_time = time.time() - total_start_time
-    print(
-        f"\n[COMPLETE] Finished {TOTAL_EPISODES} episodes in"
-        f" {total_time:.1f}s ({TOTAL_EPISODES / total_time:.1f} overall GPS)."
-    )
+            if draws_x.any():
+                draw_idx = draws_x.nonzero(as_tuple=True)[0]
+                num_draws = len(draw_idx)
+                draws_cnt += num_draws
 
+                boards[draw_idx] = 0.0
+                move_counts[draw_idx] = 0
+                swap_sides[draw_idx] = torch.rand(num_draws, device=device) < 0.5
+                
+                new_mx, new_mo, new_sx, new_so = resolve_play_styles(num_draws, device)
+                mode_x[draw_idx], mode_o[draw_idx] = new_mx, new_mo
+                strat_x[draw_idx], strat_o[draw_idx] = new_sx, new_so
 
-def print_ascii_board(board):
-    print("\n  " + ("   ".join(str(i + 1) for i in range(COLUMNS))))
-    for r_idx in range(ROWS):
-        row_str = "|"
-        for c_idx in range(COLUMNS):
-            val = board[r_idx, c_idx]
-            char = " X " if val == 1 else (" O " if val == -1 else "   ")
-            row_str += char + "|"
-        print(row_str)
-    print("_" * (COLUMNS * 4 + 1))
+                completed_episodes += num_draws
 
+            # --- PLAYER O TURN ---
+            states_before_o = boards.clone()
+            actions_o = select_actions_vectorized(
+                model_o, model_x, swap_sides, boards, mode_o, strat_o, move_counts.min().item(), epsilon
+            )
+            
+            vectorized_apply_moves(boards, player_channel=1, actions=actions_o)
+            move_counts += 1
+            wins_o = vectorized_check_wins(boards, player_channel=1)
+            draws_o = (boards.sum(dim=1) != 0).all(dim=-1).all(dim=-1) & ~wins_o
 
-def get_human_input(board, symbol):
-    valid_cols = get_valid_cols_single(board)
-    while True:
-        try:
-            col = int(input(f"Player {symbol}, choose column (1-{COLUMNS}): "))
-            if (col - 1) in valid_cols:
-                return col - 1
-            print("Invalid column or column is full. Try again.")
-        except ValueError:
-            print(f"Enter a valid number between 1 and {COLUMNS}.")
+            if wins_o.any():
+                done_idx = wins_o.nonzero(as_tuple=True)[0]
+                num_wins = len(done_idx)
 
+                o_wins_mask = ~swap_sides[done_idx]
+                x_wins_mask = swap_sides[done_idx]
+                wins_model_o_cnt += o_wins_mask.sum().item()
+                wins_model_x_cnt += x_wins_mask.sum().item()
 
-def play_interactive_match(agent_x, agent_o, human_player="X"):
-    # NumPy array representing the single interactive game board
-    board = np.zeros((ROWS, COLUMNS), dtype=np.int8)
-    print(f"\n--- Match Started! Human playing as {human_player} ---")
+                memory_o.push_batch(
+                    states_before_o[done_idx], actions_o[done_idx],
+                    torch.ones(num_wins, device=device), boards[done_idx],
+                    torch.ones(num_wins, device=device)
+                )
 
-    while True:
-        print_ascii_board(board)
+                memory_x.push_batch(
+                    states_before_x[done_idx], actions_x[done_idx],
+                    -torch.ones(num_wins, device=device), boards[done_idx],
+                    torch.ones(num_wins, device=device)
+                )
 
-        if human_player == "X":
-            # Column index chosen by human input for Player X
-            col_x = get_human_input(board, "X")
-        else:
-            # Column index chosen by agent decision for Player X
-            col_x = agent_x.select_single_action(board, epsilon=0.0)
-            print(f"AI (X) played column {col_x + 1}")
+                boards[done_idx] = 0.0
+                move_counts[done_idx] = 0
+                swap_sides[done_idx] = torch.rand(num_wins, device=device) < 0.5
+                
+                new_mx, new_mo, new_sx, new_so = resolve_play_styles(num_wins, device)
+                mode_x[done_idx], mode_o[done_idx] = new_mx, new_mo
+                strat_x[done_idx], strat_o[done_idx] = new_sx, new_so
 
-        for r_idx in range(ROWS - 1, -1, -1):
-            if board[r_idx, col_x] == 0:
-                board[r_idx, col_x] = 1
-                break
+                completed_episodes += num_wins
 
-        if check_win_single(board, 1):
-            print_ascii_board(board)
-            print("\n*** PLAYER X WINS! ***")
-            break
-        if len(get_valid_cols_single(board)) == 0:
-            print_ascii_board(board)
-            print("\n*** GAME TIED! ***")
-            break
+            if draws_o.any():
+                draw_idx = draws_o.nonzero(as_tuple=True)[0]
+                num_draws = len(draw_idx)
+                draws_cnt += num_draws
 
-        print_ascii_board(board)
+                boards[draw_idx] = 0.0
+                move_counts[draw_idx] = 0
+                swap_sides[draw_idx] = torch.rand(num_draws, device=device) < 0.5
+                
+                new_mx, new_mo, new_sx, new_so = resolve_play_styles(num_draws, device)
+                mode_x[draw_idx], mode_o[draw_idx] = new_mx, new_mo
+                strat_x[draw_idx], strat_o[draw_idx] = new_sx, new_so
 
-        if human_player == "O":
-            # Column index chosen by human input for Player O
-            col_o = get_human_input(board, "O")
-        else:
-            # Column index chosen by agent decision for Player O
-            col_o = agent_o.select_single_action(board, epsilon=0.0)
-            print(f"AI (O) played column {col_o + 1}")
+                completed_episodes += num_draws
 
-        for r_idx in range(ROWS - 1, -1, -1):
-            if board[r_idx, col_o] == 0:
-                board[r_idx, col_o] = -1
-                break
+            # --- OPTIMIZATION STEP ---
+            if memory_x.size >= BATCH_SIZE:
+                st, act, rew, nxt_st, dns = memory_x.sample(BATCH_SIZE)
+                q_vals = model_x(st).gather(1, act.unsqueeze(1)).squeeze(1)
+                with torch.no_grad():
+                    max_next_q = target_x(nxt_st).max(1)[0]
+                    targets = rew + (1 - dns) * GAMMA * max_next_q
+                loss_x = loss_fn(q_vals, targets)
+                optimizer_x.zero_grad(set_to_none=True)
+                loss_x.backward()
+                optimizer_x.step()
 
-        if check_win_single(board, -1):
-            print_ascii_board(board)
-            print("\n*** PLAYER O WINS! ***")
-            break
-        if len(get_valid_cols_single(board)) == 0:
-            print_ascii_board(board)
-            print("\n*** GAME TIED! ***")
-            break
+                st, act, rew, nxt_st, dns = memory_o.sample(BATCH_SIZE)
+                q_vals = model_o(st).gather(1, act.unsqueeze(1)).squeeze(1)
+                with torch.no_grad():
+                    max_next_q = target_o(nxt_st).max(1)[0]
+                    targets = rew + (1 - dns) * GAMMA * max_next_q
+                loss_o = loss_fn(q_vals, targets)
+                optimizer_o.zero_grad(set_to_none=True)
+                loss_o.backward()
+                optimizer_o.step()
+
+            if completed_episodes % 250 == 0:
+                target_x.load_state_dict(get_clean_state_dict(model_x))
+                target_o.load_state_dict(get_clean_state_dict(model_o))
+
+            # --- LOGGING WITH ACCURATE PERCENTAGES ---
+            if completed_episodes % LOG_INTERVAL == 0 and completed_episodes > 0:
+                elapsed = time.time() - start_time
+                gps = completed_episodes / elapsed
+                
+                total_logged_games = wins_model_x_cnt + wins_model_o_cnt + draws_cnt
+                
+                if total_logged_games > 0:
+                    x_win_pct = (wins_model_x_cnt / total_logged_games) * 100
+                    o_win_pct = (wins_model_o_cnt / total_logged_games) * 100
+                    draw_pct = (draws_cnt / total_logged_games) * 100
+                else:
+                    x_win_pct = o_win_pct = draw_pct = 0.0
+                
+                print(f"Eps: {completed_episodes:6d}/{TOTAL_EPISODES} | Speed: {gps:5.1f} GPS | "
+                      f"Win X: {x_win_pct:5.1f}% | Win O: {o_win_pct:5.1f}% | Tie: {draw_pct:5.1f}% | Eps: {epsilon:.2f}")
+                
+                wins_model_x_cnt = 0
+                wins_model_o_cnt = 0
+                draws_cnt = 0
+
+    except KeyboardInterrupt:
+        print("\n[NOTICE] Interrupted by user (Ctrl+C / Stop pressed). Saving progress...")
+    finally:
+        save_checkpoint(model_x, model_o)
 
 
 if __name__ == "__main__":
-    # LearningAgent instance representing Player X
-    agent_x = LearningAgent(MODEL_FILE_X, "X")
-
-    # LearningAgent instance representing Player O
-    agent_o = LearningAgent(MODEL_FILE_O, "O")
-
-    print("\nSelect Operating Mode:")
-    print("1. Fast Headless Self-Play Training (Background)")
-    print("2. Human (X) vs AI (O)")
-    print("3. AI (X) vs Human (O)")
-
-    # User menu selection input string
-    choice = input("Enter choice (1-3): ").strip()
-
-    if choice == "1":
-        try:
-            run_vectorized_training(agent_x, agent_o)
-        except KeyboardInterrupt:
-            print("\n[INTERRUPTED] Saving model checkpoints before exit...")
-            agent_x.save()
-            agent_o.save()
-            print("[INFO] Safety save complete.")
-    elif choice == "2":
-        play_interactive_match(agent_x, agent_o, human_player="X")
-    elif choice == "3":
-        play_interactive_match(agent_x, agent_o, human_player="O")
-    else:
-        print("Invalid choice. Exiting.")
+    train()

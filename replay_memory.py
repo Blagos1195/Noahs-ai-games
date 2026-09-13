@@ -1,27 +1,46 @@
-from collections import deque
-import random
 import torch
 
+class TensorReplayBuffer:
+    def __init__(self, capacity, device, rows=6, columns=7):
+        self.capacity = capacity
+        self.device = device
+        self.ptr = 0
+        self.size = 0
 
-class ReplayBuffer:
+        self.states = torch.zeros((capacity, 2, rows, columns), dtype=torch.float32, device=device)
+        self.actions = torch.zeros((capacity,), dtype=torch.long, device=device)
+        self.rewards = torch.zeros((capacity,), dtype=torch.float32, device=device)
+        self.next_states = torch.zeros((capacity, 2, rows, columns), dtype=torch.float32, device=device)
+        self.dones = torch.zeros((capacity,), dtype=torch.float32, device=device)
 
-    def __init__(self, capacity=20000):
-        self.buffer = deque(maxlen=capacity)
+    def push_batch(self, states, actions, rewards, next_states, dones):
+        batch_size = states.size(0)
+        
+        if batch_size > self.capacity:
+            states = states[-self.capacity:]
+            actions = actions[-self.capacity:]
+            rewards = rewards[-self.capacity:]
+            next_states = next_states[-self.capacity:]
+            dones = dones[-self.capacity:]
+            batch_size = self.capacity
 
-    def push(self, state, action, reward, next_state, done):
-        self.buffer.append((state, action, reward, next_state, done))
+        indices = (torch.arange(self.ptr, self.ptr + batch_size, device=self.device) % self.capacity).long()
+
+        self.states[indices] = states
+        self.actions[indices] = actions
+        self.rewards[indices] = rewards
+        self.next_states[indices] = next_states
+        self.dones[indices] = dones
+
+        self.ptr = (self.ptr + batch_size) % self.capacity
+        self.size = min(self.size + batch_size, self.capacity)
 
     def sample(self, batch_size):
-        batch = random.sample(self.buffer, batch_size)
-        states, actions, rewards, next_states, dones = zip(*batch)
-
-        states = torch.cat(states, dim=0)
-        actions = torch.tensor(actions, dtype=torch.long)
-        rewards = torch.tensor(rewards, dtype=torch.float32)
-        next_states = torch.cat(next_states, dim=0)
-        dones = torch.tensor(dones, dtype=torch.float32)
-
-        return states, actions, rewards, next_states, dones
-
-    def __len__(self):
-        return len(self.buffer)
+        indices = torch.randint(0, self.size, (batch_size,), device=self.device)
+        return (
+            self.states[indices],
+            self.actions[indices],
+            self.rewards[indices],
+            self.next_states[indices],
+            self.dones[indices]
+        )
