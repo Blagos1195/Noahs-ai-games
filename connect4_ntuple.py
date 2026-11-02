@@ -30,22 +30,26 @@ def build_patterns(seed=17):
 
     def add(cells):
         cells = tuple(cells)
-        mirror = tuple(r * COLS + (COLS - 1 - c) for r, c in
-                       ((cell // COLS, cell % COLS) for cell in cells))
+        if len(cells) != 8 or len(set(cells)) != 8 or any(
+            cell < 0 or cell >= ROWS * COLS for cell in cells
+        ):
+            return
+        mirror = tuple((cell // COLS) * COLS + COLS - 1 - cell % COLS
+                       for cell in cells)
         for candidate in (cells, mirror):
             key = tuple(sorted(candidate))
-            if len(set(key)) == 8 and key not in seen:
+            if key not in seen:
                 seen.add(key)
                 patterns.append(candidate)
 
     for r in range(ROWS):
         for c in range(COLS - 3):
             add([r * COLS + c + i for i in range(4)] +
-                [(r + (i % 2)) * COLS + c + i for i in range(4)])
+                [(r + 1) * COLS + c + i for i in range(4)] if r + 1 < ROWS else [])
     for r in range(ROWS - 3):
         for c in range(COLS):
             add([(r + i) * COLS + c for i in range(4)] +
-                [(r + i) * COLS + min(COLS - 1, c + (i % 2)) for i in range(4)])
+                [(r + i) * COLS + c + 1 for i in range(4)] if c + 1 < COLS else [])
     rng = random.Random(seed)
     while len(patterns) < PATTERN_COUNT:
         start = rng.randrange(ROWS * COLS)
@@ -65,7 +69,6 @@ def build_patterns(seed=17):
         if len(cells) == 8:
             add(cells)
     return np.asarray(patterns[:PATTERN_COUNT], dtype=np.int16)
-
 
 PATTERNS = build_patterns()
 POWERS = np.asarray([3 ** i for i in range(7, -1, -1)], dtype=np.int32)
@@ -203,40 +206,37 @@ class NTupleAgent:
 
 def play_episode(agent, epsilon, train=True, seed=None):
     game = ConnectFour()
-    rng = random.Random(seed)
     trajectory = []
+    turn = 0
     winner = None
     while game.moves < ROWS * COLS:
         state = (game.current, game.opponent, game.heights.copy())
         action = agent.choose_action(game, epsilon)
-        mover = game.current
         won, draw = game.play(action)
         if train:
-            trajectory.append(state)
+            trajectory.append((state, turn))
         if won:
-            winner = mover
+            winner = turn
             break
         if draw:
             break
-    if train and trajectory:
+        turn = 1 - turn
+    if train:
         for i in range(len(trajectory) - 1, -1, -1):
-            current, opponent, heights = trajectory[i]
+            (current, opponent, heights), player = trajectory[i]
             state = ConnectFour()
             state.current, state.opponent, state.heights = current, opponent, heights
-            if winner is None:
-                target = 0.0
+            if i == len(trajectory) - 1:
+                target = 0.0 if winner is None else (1.0 if player == winner else -1.0)
             else:
-                player_won = (i % 2 == (0 if winner == trajectory[0][0] else 1))
-                target = 1.0 if player_won else -1.0
-            if i + 1 < len(trajectory) and winner is None:
-                next_current, next_opponent, next_heights = trajectory[i + 1]
+                (next_current, next_opponent, next_heights), _ = trajectory[i + 1]
                 next_state = ConnectFour()
-                next_state.current, next_state.opponent, next_state.heights = (
-                    next_current, next_opponent, next_heights)
+                next_state.current = next_current
+                next_state.opponent = next_opponent
+                next_state.heights = next_heights
                 target = -agent.value(next_state)
             agent.update(state, target)
     return winner, game.moves
-
 
 def evaluate(agent, games=200, seed=100000):
     wins = losses = draws = 0
