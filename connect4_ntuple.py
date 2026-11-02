@@ -161,6 +161,7 @@ class NTupleAgent:
             return self.rng.choice(actions)
         best_value = -float("inf")
         best = []
+        safe = []
         for col in actions:
             bit = 1 << (col * STRIDE + int(game.heights[col]))
             next_current = game.opponent
@@ -169,12 +170,25 @@ class NTupleAgent:
                 return col
             next_heights = game.heights.copy()
             next_heights[col] += 1
+            allows_win = False
+            for reply in range(COLS):
+                if next_heights[reply] >= ROWS:
+                    continue
+                reply_bit = 1 << (reply * STRIDE + int(next_heights[reply]))
+                if has_won(next_current | reply_bit):
+                    allows_win = True
+                    break
             score = -_value(next_current, next_opponent, next_heights,
                             PATTERNS, self.weights)
+            if not allows_win:
+                safe.append((score, col))
             if score > best_value + 1e-9:
                 best_value, best = score, [col]
             elif abs(score - best_value) <= 1e-9:
                 best.append(col)
+        if safe:
+            best_value = max(score for score, _ in safe)
+            best = [col for score, col in safe if abs(score - best_value) <= 1e-9]
         return self.rng.choice(best)
 
     def update(self, game, target):
