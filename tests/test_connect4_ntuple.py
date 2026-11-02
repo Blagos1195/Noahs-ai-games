@@ -67,3 +67,20 @@ def test_checkpoint_round_trip(tmp_path):
     restored.load(path)
     assert restored.weights[0, 10] == 0.75
     assert restored.updates == agent.updates
+
+
+def test_agent_takes_immediate_win():
+    agent = NTupleAgent(seed=1)
+    game = ConnectFour()
+    game.current = sum(1 << (c * 7) for c in (0, 1, 2))
+    game.heights[:] = [1, 1, 1, 0, 0, 0, 0]
+    assert agent.choose_action(game) == 3
+
+
+def test_agent_blocks_immediate_opponent_win():
+    agent = NTupleAgent(seed=1)
+    game = ConnectFour()
+    game.current = 1 << (4 * 7)
+    game.opponent = sum(1 << (c * 7) for c in (0, 1, 2))
+    game.heights[:] = [1, 1, 1, 0, 1, 0, 0]
+    assert agent.choose_action(game) == 3
