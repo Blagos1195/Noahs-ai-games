@@ -1,0 +1,3 @@
+numpy>=1.26
+numba>=0.59
+pytest>=8.0
