@@ -204,9 +204,12 @@ class NTupleAgent:
     def save(self, path, episodes=0):
         path = Path(path)
         path.parent.mkdir(parents=True, exist_ok=True)
-        np.savez_compressed(path, weights=self.weights, alpha=self.alpha,
-                            gamma=self.gamma, updates=self.updates, episodes=episodes,
-                            patterns=PATTERNS)
+        temporary = path.with_suffix(path.suffix + ".tmp")
+        with temporary.open("wb") as file:
+            np.savez_compressed(file, weights=self.weights, alpha=self.alpha,
+                                gamma=self.gamma, updates=self.updates, episodes=episodes,
+                                patterns=PATTERNS)
+        temporary.replace(path)
 
     def load(self, path):
         with np.load(path, allow_pickle=False) as data:
@@ -248,7 +251,7 @@ def play_episode(agent, epsilon, train=True, seed=None):
                 next_state.current = next_current
                 next_state.opponent = next_opponent
                 next_state.heights = next_heights
-                target = -agent.value(next_state)
+                target = -agent.gamma * agent.value(next_state)
             agent.update(state, target)
     return winner, game.moves
 
