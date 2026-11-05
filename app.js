@@ -170,12 +170,12 @@ function finishGame(winner) {
     scores[winner] += 1;
     winningLine = findWinningLine(board, winner);
     statusHeading.textContent = mode === "ai"
-      ? winner === "X" ? "You win." : "The AI wins."
+      ? winner === aiPlayer ? "The AI wins." : "You win."
       : `Player ${winner === "X" ? "1" : "2"} wins.`;
     roundLabel.textContent = "GAME OVER";
-    nextTitle.textContent = winner === "X"
-      ? mode === "ai" ? "You win" : "Player 1 wins"
-      : mode === "ai" ? "AI wins" : "Player 2 wins";
+    nextTitle.textContent = mode === "ai"
+      ? winner === aiPlayer ? "AI wins" : "You win"
+      : winner === "X" ? "Player 1 wins" : "Player 2 wins";
     nextCopy.textContent = "Four in a row.";
   } else {
     scores.draw += 1;
