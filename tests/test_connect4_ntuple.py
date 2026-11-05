@@ -84,3 +84,14 @@ def test_agent_blocks_immediate_opponent_win():
     game.opponent = sum(1 << (c * 7) for c in (0, 1, 2))
     game.heights[:] = [1, 1, 1, 0, 1, 0, 0]
     assert agent.choose_action(game) == 3
+
+
+def test_board_cells_tracks_player_to_move_perspective():
+    from connect4_ntuple import board_cells
+
+    game = ConnectFour()
+    game.play(3)
+    cells = board_cells(game)
+    assert cells[5][3] == "opponent"
+    assert sum(cell == "current" for row in cells for cell in row) == 0
+    assert sum(cell == "opponent" for row in cells for cell in row) == 1
