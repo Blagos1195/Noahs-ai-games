@@ -140,6 +140,19 @@ class ConnectFour:
         return won, self.moves == ROWS * COLS
 
 
+def board_cells(game):
+    cells = [["" for _ in range(COLS)] for _ in range(ROWS)]
+    for col in range(COLS):
+        for level in range(int(game.heights[col])):
+            bit = 1 << (col * STRIDE + level)
+            row = ROWS - 1 - level
+            if game.current & bit:
+                cells[row][col] = "current"
+            elif game.opponent & bit:
+                cells[row][col] = "opponent"
+    return cells
+
+
 class NTupleAgent:
     def __init__(self, alpha=0.02, gamma=1.0, seed=1):
         self.weights = np.zeros((len(PATTERNS), TABLE_SIZE), dtype=np.float32)
