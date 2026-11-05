@@ -218,8 +218,9 @@ class NTupleAgent:
 
 def play_episode(agent, epsilon, train=True, seed=None):
     game = ConnectFour()
+    rng = random.Random(seed)
     trajectory = []
-    turn = 0
+    turn = rng.randrange(2)
     winner = None
     while game.moves < ROWS * COLS:
         state = (game.current, game.opponent, game.heights.copy())
