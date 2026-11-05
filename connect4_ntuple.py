@@ -186,6 +186,9 @@ class NTupleAgent:
         best = [col for score, col in scores if abs(score - best_value) <= 1e-9]
         return self.rng.choice(best)
 
+    def value_from_state(self, current, opponent, heights):
+        return float(_value(current, opponent, heights, PATTERNS, self.weights))
+
     def update(self, game, target):
         indices = _pattern_indices(game.current, game.opponent, game.heights, PATTERNS)
         current_value = float(self.weights[np.arange(len(PATTERNS)), indices].sum())
@@ -251,23 +254,77 @@ def play_episode(agent, epsilon, train=True, seed=None):
             agent.update(state, target)
     return winner, game.moves
 
+
+def tactical_action(game, rng):
+    legal = [c for c in range(COLS) if game.heights[c] < ROWS]
+    winning = []
+    blocking = []
+    for col in legal:
+        bit = 1 << (col * STRIDE + int(game.heights[col]))
+        if has_won(game.current | bit):
+            winning.append(col)
+        if has_won(game.opponent | bit):
+            blocking.append(col)
+    if winning:
+        return rng.choice(winning)
+    if blocking:
+        return rng.choice(blocking)
+    best = [c for c in legal if c == 3]
+    if best:
+        return best[0]
+    return rng.choice(legal)
+
+
+def play_tactical_episode(agent, epsilon, seed):
+    game = ConnectFour()
+    rng = random.Random(seed)
+    learner_player = rng.randrange(2)
+    turn = 0
+    trajectory = []
+    winner = None
+    while game.moves < ROWS * COLS:
+        if turn == learner_player:
+            state = (game.current, game.opponent, game.heights.copy())
+            action = agent.choose_action(game, epsilon)
+            trajectory.append(state)
+        else:
+            action = tactical_action(game, rng)
+        won, draw = game.play(action)
+        if won:
+            winner = turn
+            break
+        if draw:
+            break
+        turn = 1 - turn
+    reward = 0.0 if winner is None else (1.0 if winner == learner_player else -1.0)
+    for i in range(len(trajectory) - 1, -1, -1):
+        current, opponent, heights = trajectory[i]
+        state = ConnectFour()
+        state.current, state.opponent, state.heights = current, opponent, heights
+        target = reward if i == len(trajectory) - 1 else (
+            agent.gamma * agent.value_from_state(*trajectory[i + 1])
+        )
+        agent.update(state, target)
+    return winner == learner_player if winner is not None else None, game.moves
+
+
+
 def evaluate(agent, games=200, seed=100000):
     wins = losses = draws = 0
     started = time.perf_counter()
     for i in range(games):
         game = ConnectFour()
         rng = random.Random(seed + i)
-        agent_player = rng.randrange(2)
+        learner_player = rng.randrange(2)
         turn = 0
         while game.moves < ROWS * COLS:
-            if turn == agent_player:
+            if turn == learner_player:
                 action = agent.choose_action(game, 0.0)
             else:
-                legal = [c for c in range(COLS) if game.heights[c] < ROWS]
-                action = rng.choice(legal)
+                action = tactical_action(game, rng)
             won, draw = game.play(action)
             if won:
-                if turn == agent_player:
+                if turn == learner_player:
                     wins += 1
                 else:
                     losses += 1
@@ -293,24 +350,32 @@ def train(args):
     with log_path.open("a", newline="") as file:
         writer = csv.writer(file)
         if new_log:
-            writer.writerow(["episode", "epsilon", "winner", "moves", "updates",
-                             "eval_win_rate", "eval_games_per_second", "seconds"])
+            writer.writerow(["episode", "epsilon", "training_type", "result", "moves",
+                             "updates", "eval_win_rate", "eval_games_per_second", "seconds"])
         for episode in range(1, args.games + 1):
             progress = (episode - 1) / max(args.games - 1, 1)
             epsilon = args.epsilon_end + (args.epsilon_start - args.epsilon_end) * (
-                1.0 - progress)
-            winner, moves = play_episode(agent, epsilon, True, args.seed + episode)
+                0.5 * (1.0 + np.cos(np.pi * progress))
+            )
+            if (episode + args.seed) % 5 < 3:
+                winner, moves = play_episode(agent, epsilon, True, args.seed + episode)
+                training_type = "self-play"
+                result = "draw" if winner is None else ("first" if winner == 0 else "second")
+            else:
+                won, moves = play_tactical_episode(agent, epsilon, args.seed + episode)
+                training_type = "tactical"
+                result = "draw" if won is None else ("win" if won else "loss")
             eval_rate = ""
             eval_speed = ""
             if episode % args.eval_every == 0 or episode == args.games:
-                result = evaluate(agent, args.eval_games, args.seed + 9000000)
-                eval_rate = result["win_rate"]
-                eval_speed = result["games_per_second"]
-                print(f"Episode {episode}/{args.games} | random-opponent "
-                      f"{result['wins']}/{result['games']} wins | "
-                      f"{result['games_per_second']:.0f} eval games/s", flush=True)
-            writer.writerow([episode, epsilon, "draw" if winner is None else
-                             ("first" if winner == 0 else "second"), moves,
+                result_eval = evaluate(agent, args.eval_games, args.seed + 9000000)
+                eval_rate = result_eval["win_rate"]
+                eval_speed = result_eval["games_per_second"]
+                print(f"Episode {episode}/{args.games} | tactical opponent "
+                      f"{result_eval['wins']}W/{result_eval['draws']}D/"
+                      f"{result_eval['losses']}L | "
+                      f"{result_eval['games_per_second']:.0f} eval games/s", flush=True)
+            writer.writerow([episode, epsilon, training_type, result, moves,
                              agent.updates, eval_rate, eval_speed,
                              time.perf_counter() - start])
             if episode % args.save_every == 0 or episode == args.games:
