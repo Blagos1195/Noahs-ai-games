@@ -1,0 +1,20 @@
+name: Connect Four tests
+
+on:
+  push:
+    branches: ["main", "feature/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+      - run: pip install -r requirements.txt
+      - run: pytest -q
+      - run: python main.py --games 20 --eval-every 20 --eval-games 10 --save-every 20 --output /tmp/connect4-smoke.npz --log /tmp/connect4-smoke.csv
