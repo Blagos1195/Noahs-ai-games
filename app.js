@@ -124,7 +124,7 @@ function render() {
   });
 
   columnButtons.forEach((button, col) => {
-    const full = engineReady && board.slice(col, 42).filter((_, index) => index % 7 === 0).every(Boolean);
+    const full = engineReady && board.filter((_, index) => index % 7 === col).every(Boolean);
     button.disabled = !engineReady || gameOver || aiBusy || full || (mode === "ai" && currentPlayer === "O");
   });
 
