@@ -18,6 +18,7 @@ const opponentName = document.querySelector("#opponent-name");
 
 let mode = "ai";
 let currentPlayer = "X";
+let aiPlayer = "O";
 let gameOver = false;
 let aiBusy = false;
 let engineReady = false;
@@ -125,7 +126,7 @@ function render() {
 
   columnButtons.forEach((button, col) => {
     const full = engineReady && board.filter((_, index) => index % 7 === col).every(Boolean);
-    button.disabled = !engineReady || gameOver || aiBusy || full || (mode === "ai" && currentPlayer === "O");
+    button.disabled = !engineReady || gameOver || aiBusy || full || (mode === "ai" && currentPlayer === aiPlayer);
   });
 
   scoreX.textContent = scores.X;
@@ -140,20 +141,20 @@ function render() {
 
 function updateModeLabels() {
   const aiMode = mode === "ai";
-  scoreXName.textContent = aiMode ? "YOU" : "PLAYER 1";
-  scoreOName.textContent = aiMode ? "AI" : "PLAYER 2";
+  scoreXName.textContent = aiMode ? aiPlayer === "X" ? "AI" : "YOU" : "PLAYER 1";
+  scoreOName.textContent = aiMode ? aiPlayer === "O" ? "AI" : "YOU" : "PLAYER 2";
   opponentName.textContent = aiMode ? "AI" : "Player 2";
-  nextTitle.textContent = aiMode ? "Your move" : "Player 1 starts";
-  nextCopy.textContent = aiMode ? "You play red. The AI plays yellow." : "Take turns dropping counters into the board.";
+  nextTitle.textContent = aiMode ? currentPlayer === aiPlayer ? "AI turn" : "Your move" : `Player ${currentPlayer === "X" ? "1" : "2"} starts`;
+  nextCopy.textContent = aiMode ? `You play ${aiPlayer === "X" ? "yellow" : "red"}. The AI plays ${aiPlayer === "X" ? "red" : "yellow"}.` : "Take turns dropping counters into the board.";
 }
 
 function updateTurnText() {
   if (gameOver) return;
   if (mode === "ai") {
-    roundLabel.textContent = currentPlayer === "X" ? "YOUR TURN" : "THE AI IS THINKING";
-    statusHeading.textContent = currentPlayer === "X" ? "Choose a column." : "The AI is choosing.";
-    nextTitle.textContent = currentPlayer === "X" ? "Your move" : "AI turn";
-    nextCopy.textContent = currentPlayer === "X" ? "You play red. The AI plays yellow." : "The Python agent is selecting a column.";
+    roundLabel.textContent = currentPlayer === aiPlayer ? "THE AI IS THINKING" : "YOUR TURN";
+    statusHeading.textContent = currentPlayer === aiPlayer ? "The AI is choosing." : "Choose a column.";
+    nextTitle.textContent = currentPlayer === aiPlayer ? "AI turn" : "Your move";
+    nextCopy.textContent = currentPlayer === aiPlayer ? "The Python agent is selecting a column." : `You play ${currentPlayer === "X" ? "red" : "yellow"}. The AI plays ${aiPlayer === "X" ? "red" : "yellow"}.`;
   } else {
     const player = currentPlayer === "X" ? "1" : "2";
     roundLabel.textContent = `PLAYER ${player}'S TURN`;
@@ -230,7 +231,6 @@ async function makeAIMove() {
 function resetPythonGame() {
   pyodide.runPython("browser_game = c4.ConnectFour()");
   board = Array(42).fill("");
-  currentPlayer = "X";
   gameOver = false;
   aiBusy = false;
   winningLine = [];
@@ -242,7 +242,8 @@ function resetPythonGame() {
 function startGame(resetScores = false) {
   const version = ++gameVersion;
   board = Array(42).fill("");
-  currentPlayer = "X";
+  currentPlayer = Math.random() < 0.5 ? "X" : "O";
+  aiPlayer = currentPlayer === "X" ? "O" : "X";
   gameOver = false;
   aiBusy = false;
   winningLine = [];
@@ -255,7 +256,10 @@ function startGame(resetScores = false) {
   updateTurnText();
   render();
   loadAI().then(() => {
-    if (version === gameVersion) resetPythonGame();
+    if (version === gameVersion) {
+      resetPythonGame();
+      if (mode === "ai" && currentPlayer === aiPlayer) makeAIMove();
+    }
   }).catch(() => {
     statusHeading.textContent = "The game engine couldn't load.";
     nextTitle.textContent = "Python unavailable";
@@ -267,7 +271,7 @@ columnButtons.forEach(button => {
   button.addEventListener("click", async () => {
     if (!engineReady || gameOver || aiBusy) return;
     const column = Number(button.dataset.column);
-    if (mode === "ai" && currentPlayer !== "X") return;
+    if (mode === "ai" && currentPlayer === aiPlayer) return;
     playColumn(column);
     if (mode === "ai" && !gameOver) await makeAIMove();
   });
