@@ -78,3 +78,31 @@ def test_board_cells_tracks_player_to_move_perspective():
     assert cells[5][3] == "opponent"
     assert sum(cell == "current" for row in cells for cell in row) == 0
     assert sum(cell == "opponent" for row in cells for cell in row) == 1
+
+
+
+def test_training_opponent_takes_winning_move():
+    from connect4_ntuple import tactical_action
+    game = ConnectFour()
+    for _ in range(3):
+        game.play(0)
+        game.play(1)
+    assert tactical_action(game, __import__("random").Random(1)) == 0
+
+
+def test_training_opponent_blocks_immediate_win():
+    from connect4_ntuple import tactical_action
+    game = ConnectFour()
+    game.play(0)
+    game.play(1)
+    game.play(0)
+    game.play(1)
+    game.play(2)
+    assert tactical_action(game, __import__("random").Random(1)) == 3
+
+
+def test_tactical_training_episode_updates_agent():
+    from connect4_ntuple import play_tactical_episode
+    agent = NTupleAgent(seed=8)
+    play_tactical_episode(agent, 0.2, 12)
+    assert agent.updates > 0
