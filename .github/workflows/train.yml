@@ -1,0 +1,54 @@
+name: Train
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: connect-four-training
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Train AI
+        run: |
+          RESUME=""
+          if [ -f models/connect4_ntuple.npz ]; then
+            RESUME="--resume models/connect4_ntuple.npz"
+          fi
+          python main.py --games 10000 --eval-every 1000 --eval-games 100 --save-every 1000 --seed "$GITHUB_RUN_NUMBER" $RESUME
+
+      - name: Save training results
+        uses: actions/upload-artifact@v4
+        with:
+          name: connect-four-training-results
+          path: training_connect4.csv
+          if-no-files-found: error
+
+      - name: Publish model
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add models/connect4_ntuple.npz
+          if git diff --cached --quiet; then
+            echo "Model is unchanged."
+          else
+            git commit -m "Update Connect Four AI model"
+            git push origin HEAD:main
+          fi
