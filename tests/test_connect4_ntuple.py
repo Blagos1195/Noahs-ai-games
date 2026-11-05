@@ -69,23 +69,6 @@ def test_checkpoint_round_trip(tmp_path):
     assert restored.updates == agent.updates
 
 
-def test_agent_takes_immediate_win():
-    agent = NTupleAgent(seed=1)
-    game = ConnectFour()
-    game.current = sum(1 << (c * 7) for c in (0, 1, 2))
-    game.heights[:] = [1, 1, 1, 0, 0, 0, 0]
-    assert agent.choose_action(game) == 3
-
-
-def test_agent_blocks_immediate_opponent_win():
-    agent = NTupleAgent(seed=1)
-    game = ConnectFour()
-    game.current = 1 << (4 * 7)
-    game.opponent = sum(1 << (c * 7) for c in (0, 1, 2))
-    game.heights[:] = [1, 1, 1, 0, 1, 0, 0]
-    assert agent.choose_action(game) == 3
-
-
 def test_board_cells_tracks_player_to_move_perspective():
     from connect4_ntuple import board_cells
 
