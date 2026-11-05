@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#ffffff">
+  <title>Connect Four</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/pyodide/v0.27.7/full/pyodide.js"></script>
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <main class="shell">
+    <div class="page-heading">
+      <h1>Connect Four</h1>
+      <span class="top-note"><span class="status-dot"></span><span id="model-status">Loading Python AI...</span></span>
+    </div>
+    <section class="game-card" aria-label="Connect Four game">
+      <div class="mode-picker" role="group" aria-label="Game mode">
+        <button class="mode-button active" data-mode="ai" aria-pressed="true">Player vs AI</button>
+        <button class="mode-button" data-mode="pvp" aria-pressed="false">Player vs Player</button>
+      </div>
+      <div class="game-layout">
+        <section class="board-column">
+          <div class="board-heading">
+            <div>
+              <p class="eyebrow" id="round-label">YOUR TURN</p>
+              <h2 id="game-status" aria-live="polite">Choose a column.</h2>
+            </div>
+            <span class="turn-pill" id="turn-pill"><span class="turn-symbol x-disc"></span><span id="turn-label">YOUR MOVE</span></span>
+          </div>
+          <div class="column-controls" id="column-controls" aria-label="Choose a column">
+            <button class="column-button" data-column="0" aria-label="Drop in column 1">1</button>
+            <button class="column-button" data-column="1" aria-label="Drop in column 2">2</button>
+            <button class="column-button" data-column="2" aria-label="Drop in column 3">3</button>
+            <button class="column-button" data-column="3" aria-label="Drop in column 4">4</button>
+            <button class="column-button" data-column="4" aria-label="Drop in column 5">5</button>
+            <button class="column-button" data-column="5" aria-label="Drop in column 6">6</button>
+            <button class="column-button" data-column="6" aria-label="Drop in column 7">7</button>
+          </div>
+          <div class="board" id="board" role="grid" aria-label="Connect Four board"></div>
+          <div class="board-footer">
+            <span><i class="x-disc"></i> Player 1</span>
+            <span><i class="o-disc"></i> <span id="opponent-name">Trained AI</span></span>
+          </div>
+        </section>
+        <aside class="side-panel">
+          <h2>Score</h2>
+          <div class="score-row">
+            <div class="score-box">
+              <span class="score-disc x-disc"></span>
+              <span class="score-number" id="score-x">0</span>
+              <span class="score-name" id="score-x-name">YOU</span>
+            </div>
+            <div class="score-divider"></div>
+            <div class="score-box">
+              <span class="score-disc o-disc"></span>
+              <span class="score-number" id="score-o">0</span>
+              <span class="score-name" id="score-o-name">AI</span>
+            </div>
+          </div>
+          <div class="draw-count"><span>Draws</span><b id="score-draw">0</b></div>
+          <p class="next-copy"><b id="next-title">Your move</b><br><span id="next-copy">You play red. The AI plays yellow.</span></p>
+          <button class="primary-button" id="new-game">New game</button>
+          <button class="text-button" id="reset-scores">Reset scores</button>
+        </aside>
+      </div>
+    </section>
+  </main>
+</body>
+</html>
