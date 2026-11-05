@@ -339,11 +339,26 @@ def evaluate(agent, games=200, seed=100000):
             "games_per_second": games / max(elapsed, 1e-9)}
 
 
+def epsilon_for_elapsed(elapsed, duration, epsilon_start, epsilon_end):
+    progress = min(max(elapsed / max(duration, 1e-9), 0.0), 1.0)
+    return epsilon_end + (epsilon_start - epsilon_end) * (
+        0.5 * (1.0 + np.cos(np.pi * progress))
+    )
+
+
 def train(args):
     agent = NTupleAgent(args.alpha, args.gamma, args.seed)
     if args.resume and Path(args.resume).exists():
         agent.load(args.resume)
+
     start = time.perf_counter()
+    duration = args.time_limit_minutes * 60 if args.time_limit_minutes else 0
+    deadline = start + duration if duration else None
+    eval_interval = args.eval_every_minutes * 60 if args.eval_every_minutes else 0
+    save_interval = args.save_every_minutes * 60 if args.save_every_minutes else 0
+    next_eval = start + eval_interval if eval_interval else None
+    next_save = start + save_interval if save_interval else None
+
     log_path = Path(args.log)
     log_path.parent.mkdir(parents=True, exist_ok=True)
     new_log = not log_path.exists()
@@ -352,11 +367,23 @@ def train(args):
         if new_log:
             writer.writerow(["episode", "epsilon", "training_type", "result", "moves",
                              "updates", "eval_win_rate", "eval_games_per_second", "seconds"])
-        for episode in range(1, args.games + 1):
-            progress = (episode - 1) / max(args.games - 1, 1)
-            epsilon = args.epsilon_end + (args.epsilon_start - args.epsilon_end) * (
-                0.5 * (1.0 + np.cos(np.pi * progress))
-            )
+            file.flush()
+
+        episode = 0
+        last_eval_episode = 0
+        while episode < args.games and (deadline is None or time.perf_counter() < deadline):
+            episode += 1
+            elapsed = time.perf_counter() - start
+            if duration:
+                epsilon = epsilon_for_elapsed(
+                    elapsed, duration, args.epsilon_start, args.epsilon_end
+                )
+            else:
+                progress = (episode - 1) / max(args.games - 1, 1)
+                epsilon = args.epsilon_end + (args.epsilon_start - args.epsilon_end) * (
+                    0.5 * (1.0 + np.cos(np.pi * progress))
+                )
+
             if (episode + args.seed) % 5 < 3:
                 winner, moves = play_episode(agent, epsilon, True, args.seed + episode)
                 training_type = "self-play"
@@ -365,22 +392,56 @@ def train(args):
                 won, moves = play_tactical_episode(agent, epsilon, args.seed + episode)
                 training_type = "tactical"
                 result = "draw" if won is None else ("win" if won else "loss")
+
+            now = time.perf_counter()
+            eval_due = (
+                (eval_interval and now >= next_eval) or
+                (not duration and episode % args.eval_every == 0)
+            )
             eval_rate = ""
             eval_speed = ""
-            if episode % args.eval_every == 0 or episode == args.games:
-                result_eval = evaluate(agent, args.eval_games, args.seed + 9000000)
+            if eval_due:
+                result_eval = evaluate(agent, args.eval_games, args.seed + 9000000 + episode)
                 eval_rate = result_eval["win_rate"]
                 eval_speed = result_eval["games_per_second"]
-                print(f"Episode {episode}/{args.games} | tactical opponent "
+                last_eval_episode = episode
+                print(f"Episode {episode} | tactical opponent "
                       f"{result_eval['wins']}W/{result_eval['draws']}D/"
                       f"{result_eval['losses']}L | "
                       f"{result_eval['games_per_second']:.0f} eval games/s", flush=True)
+                if eval_interval:
+                    next_eval = time.perf_counter() + eval_interval
+
             writer.writerow([episode, epsilon, training_type, result, moves,
                              agent.updates, eval_rate, eval_speed,
                              time.perf_counter() - start])
-            if episode % args.save_every == 0 or episode == args.games:
+
+            now = time.perf_counter()
+            save_due = (
+                (save_interval and now >= next_save) or
+                (not duration and episode % args.save_every == 0)
+            )
+            if save_due:
                 agent.save(args.output, episode)
                 file.flush()
+                print(f"Checkpoint saved at episode {episode}", flush=True)
+                if save_interval:
+                    next_save = time.perf_counter() + save_interval
+
+        if episode and last_eval_episode != episode:
+            result_eval = evaluate(agent, args.eval_games, args.seed + 9000000 + episode)
+            print(f"Final evaluation | tactical opponent "
+                  f"{result_eval['wins']}W/{result_eval['draws']}D/"
+                  f"{result_eval['losses']}L | "
+                  f"{result_eval['games_per_second']:.0f} eval games/s", flush=True)
+            writer.writerow([episode, args.epsilon_end, "evaluation", "", 0,
+                             agent.updates, result_eval["win_rate"],
+                             result_eval["games_per_second"],
+                             time.perf_counter() - start])
+
+        agent.save(args.output, episode)
+        file.flush()
+    print(f"Training finished after {episode} episodes.", flush=True)
 
 
 def main():
@@ -394,12 +455,17 @@ def main():
     parser.add_argument("--eval-every", type=int, default=5000)
     parser.add_argument("--eval-games", type=int, default=200)
     parser.add_argument("--save-every", type=int, default=5000)
+    parser.add_argument("--time-limit-minutes", type=float, default=0)
+    parser.add_argument("--eval-every-minutes", type=float, default=0)
+    parser.add_argument("--save-every-minutes", type=float, default=0)
     parser.add_argument("--resume", default="")
     parser.add_argument("--output", default="models/connect4_ntuple.npz")
     parser.add_argument("--log", default="training_connect4.csv")
     args = parser.parse_args()
-    if args.games < 1 or args.eval_every < 1 or args.eval_games < 1:
-        parser.error("games, eval-every and eval-games must be positive")
+    if (args.games < 1 or args.eval_every < 1 or args.eval_games < 1 or
+            args.time_limit_minutes < 0 or args.eval_every_minutes < 0 or
+            args.save_every_minutes < 0):
+        parser.error("game counts and intervals must be positive or zero for disabled time limits")
     train(args)
 
 
