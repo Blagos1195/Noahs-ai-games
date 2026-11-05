@@ -172,36 +172,18 @@ class NTupleAgent:
             raise ValueError("No legal moves")
         if self.rng.random() < epsilon:
             return self.rng.choice(actions)
-        best_value = -float("inf")
-        best = []
-        safe = []
+        scores = []
         for col in actions:
             bit = 1 << (col * STRIDE + int(game.heights[col]))
             next_current = game.opponent
             next_opponent = game.current | bit
-            if has_won(next_opponent):
-                return col
             next_heights = game.heights.copy()
             next_heights[col] += 1
-            allows_win = False
-            for reply in range(COLS):
-                if next_heights[reply] >= ROWS:
-                    continue
-                reply_bit = 1 << (reply * STRIDE + int(next_heights[reply]))
-                if has_won(next_current | reply_bit):
-                    allows_win = True
-                    break
             score = -_value(next_current, next_opponent, next_heights,
                             PATTERNS, self.weights)
-            if not allows_win:
-                safe.append((score, col))
-            if score > best_value + 1e-9:
-                best_value, best = score, [col]
-            elif abs(score - best_value) <= 1e-9:
-                best.append(col)
-        if safe:
-            best_value = max(score for score, _ in safe)
-            best = [col for score, col in safe if abs(score - best_value) <= 1e-9]
+            scores.append((score, col))
+        best_value = max(score for score, _ in scores)
+        best = [col for score, col in scores if abs(score - best_value) <= 1e-9]
         return self.rng.choice(best)
 
     def update(self, game, target):
@@ -274,16 +256,17 @@ def evaluate(agent, games=200, seed=100000):
     for i in range(games):
         game = ConnectFour()
         rng = random.Random(seed + i)
+        agent_player = rng.randrange(2)
         turn = 0
         while game.moves < ROWS * COLS:
-            if turn == 0:
+            if turn == agent_player:
                 action = agent.choose_action(game, 0.0)
             else:
                 legal = [c for c in range(COLS) if game.heights[c] < ROWS]
                 action = rng.choice(legal)
             won, draw = game.play(action)
             if won:
-                if turn == 0:
+                if turn == agent_player:
                     wins += 1
                 else:
                     losses += 1
