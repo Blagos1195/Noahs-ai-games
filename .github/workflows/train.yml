@@ -13,7 +13,7 @@ concurrency:
 jobs:
   train:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 355
     steps:
       - uses: actions/checkout@v4
         with:
@@ -32,7 +32,7 @@ jobs:
           if [ -f models/connect4_ntuple.npz ]; then
             RESUME="--resume models/connect4_ntuple.npz"
           fi
-          python main.py --games 30000 --epsilon-start 0.25 --epsilon-end 0.03 --eval-every 3000 --eval-games 200 --save-every 3000 --seed "$GITHUB_RUN_NUMBER" $RESUME
+          python main.py --games 100000000 --time-limit-minutes 345 --epsilon-start 0.25 --epsilon-end 0.03 --eval-every-minutes 15 --eval-games 100 --save-every-minutes 5 --seed "$GITHUB_RUN_NUMBER" $RESUME
 
       - name: Save training results
         uses: actions/upload-artifact@v4
