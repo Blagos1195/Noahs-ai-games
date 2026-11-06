@@ -122,6 +122,33 @@ def _value(current, opponent, heights, patterns, weights):
     return total
 
 
+@njit(cache=True)
+def _negamax(current, opponent, heights, depth, alpha, beta, patterns, weights):
+    if depth <= 0:
+        return _value(current, opponent, heights, patterns, weights)
+    best = -1e30
+    found = False
+    for offset in range(COLS):
+        col = 3 if offset == 0 else (3 - (offset + 1) // 2 if offset % 2 else 3 + offset // 2)
+        if heights[col] >= ROWS:
+            continue
+        found = True
+        bit = 1 << (col * STRIDE + int(heights[col]))
+        if has_won(current | bit):
+            return 100000.0 + depth
+        next_heights = heights.copy()
+        next_heights[col] += 1
+        score = -_negamax(opponent, current | bit, next_heights, depth - 1,
+                          -beta, -alpha, patterns, weights)
+        if score > best:
+            best = score
+        if score > alpha:
+            alpha = score
+        if alpha >= beta:
+            break
+    return best if found else 0.0
+
+
 class ConnectFour:
     def __init__(self):
         self.current = 0
@@ -187,6 +214,36 @@ class NTupleAgent:
         best = [col for score, col in scores if abs(score - best_value) <= 1e-9]
         return self.rng.choice(best)
 
+    def choose_search_action(self, game, epsilon=0.0, depth=4):
+        mask = int(legal_mask(game.heights))
+        actions = [c for c in range(COLS) if mask & (1 << c)]
+        if not actions:
+            raise ValueError("No legal moves")
+        if self.rng.random() < epsilon:
+            return self.rng.choice(actions)
+        best_score = -1e30
+        best_actions = []
+        alpha = -1e30
+        for offset in range(COLS):
+            col = 3 if offset == 0 else (3 - (offset + 1) // 2 if offset % 2 else 3 + offset // 2)
+            if col not in actions:
+                continue
+            bit = 1 << (col * STRIDE + int(game.heights[col]))
+            if has_won(game.current | bit):
+                return col
+            next_heights = game.heights.copy()
+            next_heights[col] += 1
+            score = -_negamax(game.opponent, game.current | bit, next_heights,
+                              max(0, depth - 1), -1e30, -alpha, PATTERNS, self.weights)
+            if score > best_score + 1e-9:
+                best_score = score
+                best_actions = [col]
+            elif abs(score - best_score) <= 1e-9:
+                best_actions.append(col)
+            if score > alpha:
+                alpha = score
+        return self.rng.choice(best_actions)
+
     def value_from_state(self, current, opponent, heights):
         return float(_value(current, opponent, heights, PATTERNS, self.weights))
 
@@ -220,7 +277,7 @@ class NTupleAgent:
             self.updates = int(data["updates"])
 
 
-def play_episode(agent, epsilon, train=True, seed=None):
+def play_episode(agent, epsilon, train=True, seed=None, search_depth=1):
     game = ConnectFour()
     rng = random.Random(seed)
     trajectory = []
@@ -228,7 +285,8 @@ def play_episode(agent, epsilon, train=True, seed=None):
     winner = None
     while game.moves < ROWS * COLS:
         state = (game.current, game.opponent, game.heights.copy())
-        action = agent.choose_action(game, epsilon)
+        action = (agent.choose_action(game, epsilon) if search_depth <= 1 else
+                  agent.choose_search_action(game, epsilon, search_depth))
         won, draw = game.play(action)
         if train:
             trajectory.append((state, turn))
@@ -276,7 +334,7 @@ def tactical_action(game, rng):
     return rng.choice(legal)
 
 
-def play_tactical_episode(agent, epsilon, seed):
+def play_tactical_episode(agent, epsilon, seed, search_depth=1):
     game = ConnectFour()
     rng = random.Random(seed)
     learner_player = rng.randrange(2)
@@ -286,7 +344,8 @@ def play_tactical_episode(agent, epsilon, seed):
     while game.moves < ROWS * COLS:
         if turn == learner_player:
             state = (game.current, game.opponent, game.heights.copy())
-            action = agent.choose_action(game, epsilon)
+            action = (agent.choose_action(game, epsilon) if search_depth <= 1 else
+                      agent.choose_search_action(game, epsilon, search_depth))
             trajectory.append(state)
         else:
             action = tactical_action(game, rng)
@@ -386,11 +445,13 @@ def train(args):
                 )
 
             if (episode + args.seed) % 5 < 3:
-                winner, moves = play_episode(agent, epsilon, True, args.seed + episode)
+                winner, moves = play_episode(agent, epsilon, True, args.seed + episode,
+                                             args.search_depth)
                 training_type = "self-play"
                 result = "draw" if winner is None else ("first" if winner == 0 else "second")
             else:
-                won, moves = play_tactical_episode(agent, epsilon, args.seed + episode)
+                won, moves = play_tactical_episode(agent, epsilon, args.seed + episode,
+                                                   args.search_depth)
                 training_type = "tactical"
                 result = "draw" if won is None else ("win" if won else "loss")
 
@@ -451,6 +512,7 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--alpha", type=float, default=0.02)
     parser.add_argument("--gamma", type=float, default=1.0)
+    parser.add_argument("--search-depth", type=int, default=1)
     parser.add_argument("--epsilon-start", type=float, default=0.2)
     parser.add_argument("--epsilon-end", type=float, default=0.02)
     parser.add_argument("--eval-every", type=int, default=5000)
@@ -465,7 +527,7 @@ def main():
     args = parser.parse_args()
     if (args.games < 1 or args.eval_every < 1 or args.eval_games < 1 or
             args.time_limit_minutes < 0 or args.eval_every_minutes < 0 or
-            args.save_every_minutes < 0):
+            args.save_every_minutes < 0 or args.search_depth < 1 or args.search_depth > 8):
         parser.error("game counts and intervals must be positive or zero for disabled time limits")
     train(args)
 
