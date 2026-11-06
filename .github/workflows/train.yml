@@ -38,18 +38,29 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: connect-four-training-results
-          path: training_connect4.csv
+          path: |
+            training_connect4.csv
+            models/connect4_ntuple.npz
           if-no-files-found: error
 
       - name: Publish model
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git pull --rebase origin main
-          git add models/connect4_ntuple.npz
-          if git diff --cached --quiet; then
-            echo "Model is unchanged."
-          else
+          git config user.email "41898282+users.noreply.github.com"
+          MODEL_BACKUP="$RUNNER_TEMP/connect4_ntuple.npz"
+          cp models/connect4_ntuple.npz "$MODEL_BACKUP"
+          for attempt in 1 2 3; do
+            git fetch origin main:refs/remotes/origin/main
+            git reset --hard origin/main
+            cp "$MODEL_BACKUP" models/connect4_ntuple.npz
+            git add models/connect4_ntuple.npz
+            if git diff --cached --quiet; then
+              echo "Model is unchanged."
+              exit 0
+            fi
             git commit -m "Update Connect Four AI model"
-            git push origin HEAD:main
-          fi
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+          done
+          exit 1
