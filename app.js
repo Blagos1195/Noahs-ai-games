@@ -27,7 +27,7 @@ let aiLoading = null;
 let gameVersion = 0;
 let board = Array(42).fill("");
 let winningLine = [];
-const scores = { X: 0, O: 0, draw: 0 };
+const scores = { you: 0, ai: 0, player1: 0, player2: 0, draw: 0 };
 
 function otherPlayer(player) {
   return player === "X" ? "O" : "X";
@@ -129,8 +129,8 @@ function render() {
     button.disabled = !engineReady || gameOver || aiBusy || full || (mode === "ai" && currentPlayer === aiPlayer);
   });
 
-  scoreX.textContent = scores.X;
-  scoreO.textContent = scores.O;
+  scoreX.textContent = mode === "ai" ? scores.you : scores.player1;
+  scoreO.textContent = mode === "ai" ? scores.ai : scores.player2;
   scoreDraw.textContent = scores.draw;
   turnPill.style.visibility = gameOver ? "hidden" : "visible";
   turnDisc.className = currentPlayer === "X" ? "x-disc" : "o-disc";
@@ -144,6 +144,8 @@ function updateModeLabels() {
   scoreXName.textContent = aiMode ? aiPlayer === "X" ? "AI" : "YOU" : "PLAYER 1";
   scoreOName.textContent = aiMode ? aiPlayer === "O" ? "AI" : "YOU" : "PLAYER 2";
   opponentName.textContent = aiMode ? "AI" : "Player 2";
+  scoreX.parentElement.querySelector(".score-disc").className = `score-disc ${aiMode && aiPlayer === "O" ? "o-disc" : "x-disc"}`;
+  scoreO.parentElement.querySelector(".score-disc").className = `score-disc ${aiMode && aiPlayer === "X" ? "x-disc" : "o-disc"}`;
   nextTitle.textContent = aiMode ? currentPlayer === aiPlayer ? "AI turn" : "Your move" : `Player ${currentPlayer === "X" ? "1" : "2"} starts`;
   nextCopy.textContent = aiMode ? `You play ${aiPlayer === "X" ? "yellow" : "red"}. The AI plays ${aiPlayer === "X" ? "red" : "yellow"}.` : "Take turns dropping counters into the board.";
 }
@@ -167,7 +169,8 @@ function updateTurnText() {
 function finishGame(winner) {
   gameOver = true;
   if (winner) {
-    scores[winner] += 1;
+    if (mode === "ai") scores[winner === aiPlayer ? "ai" : "you"] += 1;
+    else scores[winner === "X" ? "player1" : "player2"] += 1;
     winningLine = findWinningLine(board, winner);
     statusHeading.textContent = mode === "ai"
       ? winner === aiPlayer ? "The AI wins." : "You win."
@@ -249,8 +252,10 @@ function startGame(resetScores = false) {
   aiBusy = false;
   winningLine = [];
   if (resetScores) {
-    scores.X = 0;
-    scores.O = 0;
+    scores.you = 0;
+    scores.ai = 0;
+    scores.player1 = 0;
+    scores.player2 = 0;
     scores.draw = 0;
   }
   updateModeLabels();
