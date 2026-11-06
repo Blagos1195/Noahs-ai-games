@@ -193,7 +193,8 @@ class NTupleAgent:
         return float(_value(game.current, game.opponent, game.heights,
                              PATTERNS, self.weights))
 
-    def choose_action(self, game, epsilon=0.0):
+    def choose_action(self, game, epsilon=0.0, weights=None):
+        weights = self.weights if weights is None else weights
         mask = int(legal_mask(game.heights))
         actions = [c for c in range(COLS) if mask & (1 << c)]
         if not actions:
@@ -208,13 +209,14 @@ class NTupleAgent:
             next_heights = game.heights.copy()
             next_heights[col] += 1
             score = -_value(next_current, next_opponent, next_heights,
-                            PATTERNS, self.weights)
+                            PATTERNS, weights)
             scores.append((score, col))
         best_value = max(score for score, _ in scores)
         best = [col for score, col in scores if abs(score - best_value) <= 1e-9]
         return self.rng.choice(best)
 
-    def choose_search_action(self, game, epsilon=0.0, depth=4):
+    def choose_search_action(self, game, epsilon=0.0, depth=4, weights=None):
+        weights = self.weights if weights is None else weights
         mask = int(legal_mask(game.heights))
         actions = [c for c in range(COLS) if mask & (1 << c)]
         if not actions:
@@ -234,7 +236,7 @@ class NTupleAgent:
             next_heights = game.heights.copy()
             next_heights[col] += 1
             score = -_negamax(game.opponent, game.current | bit, next_heights,
-                              max(0, depth - 1), -1e30, -alpha, PATTERNS, self.weights)
+                              max(0, depth - 1), -1e30, -alpha, PATTERNS, weights)
             if score > best_score + 1e-9:
                 best_score = score
                 best_actions = [col]
@@ -369,7 +371,44 @@ def play_tactical_episode(agent, epsilon, seed, search_depth=1):
 
 
 
-def evaluate(agent, games=200, seed=100000):
+def play_pool_episode(agent, opponent_weights, epsilon, seed, search_depth=2):
+    game = ConnectFour()
+    rng = random.Random(seed)
+    learner_player = rng.randrange(2)
+    turn = 0
+    trajectory = []
+    winner = None
+    while game.moves < ROWS * COLS:
+        if turn == learner_player:
+            state = (game.current, game.opponent, game.heights.copy())
+            action = (agent.choose_action(game, epsilon) if search_depth <= 1 else
+                      agent.choose_search_action(game, epsilon, search_depth))
+            trajectory.append(state)
+        else:
+            action = (agent.choose_action(game, weights=opponent_weights) if search_depth <= 1 else
+                      agent.choose_search_action(game, depth=search_depth, weights=opponent_weights))
+        won, draw = game.play(action)
+        if won:
+            winner = turn
+            break
+        if draw:
+            break
+        turn = 1 - turn
+    reward = 0.0 if winner is None else (1.0 if winner == learner_player else -1.0)
+    for i in range(len(trajectory) - 1, -1, -1):
+        current, opponent, heights = trajectory[i]
+        state = ConnectFour()
+        state.current, state.opponent, state.heights = current, opponent, heights
+        target = reward if i == len(trajectory) - 1 else (
+            agent.gamma * agent.value_from_state(*trajectory[i + 1])
+        )
+        agent.update(state, target)
+    return winner == learner_player if winner is not None else None, game.moves
+
+
+def evaluate(agent, games=100, seed=100000, search_depth=2):
+    evaluator = NTupleAgent(agent.alpha, agent.gamma, seed)
+    evaluator.weights[:] = agent.weights
     wins = losses = draws = 0
     started = time.perf_counter()
     for i in range(games):
@@ -379,7 +418,8 @@ def evaluate(agent, games=200, seed=100000):
         turn = 0
         while game.moves < ROWS * COLS:
             if turn == learner_player:
-                action = agent.choose_action(game, 0.0)
+                action = (evaluator.choose_action(game, 0.0) if search_depth <= 1 else
+                          evaluator.choose_search_action(game, 0.0, search_depth))
             else:
                 action = tactical_action(game, rng)
             won, draw = game.play(action)
@@ -395,9 +435,8 @@ def evaluate(agent, games=200, seed=100000):
             turn = 1 - turn
     elapsed = time.perf_counter() - started
     return {"games": games, "wins": wins, "losses": losses, "draws": draws,
-            "win_rate": wins / games, "seconds": elapsed,
-            "games_per_second": games / max(elapsed, 1e-9)}
-
+            "win_rate": wins / games, "points": wins + 0.5 * draws,
+            "seconds": elapsed, "games_per_second": games / max(elapsed, 1e-9)}
 
 def epsilon_for_elapsed(elapsed, duration, epsilon_start, epsilon_end):
     progress = min(max(elapsed / max(duration, 1e-9), 0.0), 1.0)
