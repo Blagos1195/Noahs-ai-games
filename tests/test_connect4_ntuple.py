@@ -106,3 +106,32 @@ def test_tactical_training_episode_updates_agent():
     agent = NTupleAgent(seed=8)
     play_tactical_episode(agent, 0.2, 12)
     assert agent.updates > 0
+
+
+
+def test_search_agent_takes_immediate_win():
+    agent = NTupleAgent(seed=2)
+    game = ConnectFour()
+    for _ in range(3):
+        game.play(0)
+        game.play(1)
+    assert agent.choose_search_action(game, depth=4) == 0
+
+
+def test_search_agent_blocks_immediate_win():
+    agent = NTupleAgent(seed=2)
+    game = ConnectFour()
+    for col in (0, 1, 0, 1, 2):
+        game.play(col)
+    assert agent.choose_search_action(game, depth=4) == 3
+
+
+def test_search_agent_only_chooses_legal_moves():
+    agent = NTupleAgent(seed=2)
+    game = ConnectFour()
+    for _ in range(6):
+        game.play(0)
+    for _ in range(10):
+        action = agent.choose_search_action(game, depth=3)
+        assert 0 <= action < 7
+        assert game.heights[action] < 6
