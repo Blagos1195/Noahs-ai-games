@@ -121,7 +121,7 @@ def test_search_agent_takes_immediate_win():
 def test_search_agent_blocks_immediate_win():
     agent = NTupleAgent(seed=2)
     game = ConnectFour()
-    for col in (0, 1, 0, 1, 2):
+    for col in (0, 6, 1, 6, 2):
         game.play(col)
     assert agent.choose_search_action(game, depth=4) == 3
 
