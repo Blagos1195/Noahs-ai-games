@@ -94,6 +94,8 @@ def legal_mask(heights):
 
 @njit(cache=True)
 def _pattern_indices(current, opponent, heights, patterns):
+    current = int(current)
+    opponent = int(opponent)
     result = np.empty(patterns.shape[0], dtype=np.int32)
     for p in range(patterns.shape[0]):
         idx = 0
