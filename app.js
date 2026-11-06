@@ -223,7 +223,8 @@ async function makeAIMove() {
     statusHeading.textContent = "The AI couldn't move.";
     roundLabel.textContent = "AI ERROR";
     nextTitle.textContent = "AI unavailable";
-    nextCopy.textContent = "Refresh the page and try again.";
+    nextCopy.textContent = error?.message || String(error);
+    setModelStatus("AI error: " + (error?.message || String(error)));
     render();
   }
 }
