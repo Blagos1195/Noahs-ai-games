@@ -457,6 +457,15 @@ def train(args):
     save_interval = args.save_every_minutes * 60 if args.save_every_minutes else 0
     next_eval = start + eval_interval if eval_interval else None
     next_save = start + save_interval if save_interval else None
+    opponent_pool = [agent.weights.copy()]
+    next_snapshot = 500000
+    best_agent = NTupleAgent(args.alpha, args.gamma, args.seed)
+    initial_eval = evaluate(agent, args.eval_games, args.eval_seed, args.search_depth)
+    best_score = initial_eval["points"]
+    best_agent.weights[:] = agent.weights
+    best_agent.save(args.best_output, 0)
+    print(f"Initial evaluation | tactical opponent {initial_eval['wins']}W/"
+          f"{initial_eval['draws']}D/{initial_eval['losses']}L", flush=True)
 
     log_path = Path(args.log)
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -474,54 +483,58 @@ def train(args):
             episode += 1
             elapsed = time.perf_counter() - start
             if duration:
-                epsilon = epsilon_for_elapsed(
-                    elapsed, duration, args.epsilon_start, args.epsilon_end
-                )
+                epsilon = epsilon_for_elapsed(elapsed, duration, args.epsilon_start, args.epsilon_end)
             else:
                 progress = (episode - 1) / max(args.games - 1, 1)
                 epsilon = args.epsilon_end + (args.epsilon_start - args.epsilon_end) * (
                     0.5 * (1.0 + np.cos(np.pi * progress))
                 )
 
-            if (episode + args.seed) % 5 < 3:
-                winner, moves = play_episode(agent, epsilon, True, args.seed + episode,
-                                             args.search_depth)
-                training_type = "search-self-play" if args.search_depth > 1 else "self-play"
+            if episode >= next_snapshot:
+                opponent_pool.append(agent.weights.copy())
+                opponent_pool = opponent_pool[-6:]
+                next_snapshot += 500000
+
+            mode = (episode + args.seed) % 10
+            if mode < 4:
+                winner, moves = play_episode(agent, epsilon, True, args.seed + episode, args.search_depth)
+                training_type = "search-self-play"
                 result = "draw" if winner is None else ("first" if winner == 0 else "second")
+            elif mode < 7:
+                old_weights = opponent_pool[agent.rng.randrange(len(opponent_pool))]
+                won, moves = play_pool_episode(agent, old_weights, epsilon, args.seed + episode, args.search_depth)
+                training_type = "snapshot-opponent"
+                result = "draw" if won is None else ("win" if won else "loss")
             else:
-                won, moves = play_tactical_episode(agent, epsilon, args.seed + episode,
-                                                   args.search_depth)
-                training_type = "search-tactical" if args.search_depth > 1 else "tactical"
+                won, moves = play_tactical_episode(agent, epsilon, args.seed + episode, args.search_depth)
+                training_type = "search-tactical"
                 result = "draw" if won is None else ("win" if won else "loss")
 
             now = time.perf_counter()
-            eval_due = (
-                (eval_interval and now >= next_eval) or
-                (not duration and episode % args.eval_every == 0)
-            )
-            eval_rate = ""
-            eval_speed = ""
+            eval_due = ((eval_interval and now >= next_eval) or
+                        (not duration and episode % args.eval_every == 0))
+            eval_rate = eval_speed = ""
             if eval_due:
-                result_eval = evaluate(agent, args.eval_games, args.seed + 9000000 + episode)
+                result_eval = evaluate(agent, args.eval_games, args.eval_seed, args.search_depth)
                 eval_rate = result_eval["win_rate"]
                 eval_speed = result_eval["games_per_second"]
                 last_eval_episode = episode
-                print(f"Episode {episode} | tactical opponent "
-                      f"{result_eval['wins']}W/{result_eval['draws']}D/"
-                      f"{result_eval['losses']}L | "
-                      f"{result_eval['games_per_second']:.0f} eval games/s", flush=True)
+                print(f"Episode {episode} | tactical opponent {result_eval['wins']}W/"
+                      f"{result_eval['draws']}D/{result_eval['losses']}L", flush=True)
+                if result_eval["points"] > best_score:
+                    best_score = result_eval["points"]
+                    best_agent.weights[:] = agent.weights
+                    best_agent.updates = agent.updates
+                    best_agent.save(args.best_output, episode)
+                    print(f"New best checkpoint saved at episode {episode}", flush=True)
                 if eval_interval:
                     next_eval = time.perf_counter() + eval_interval
 
-            writer.writerow([episode, epsilon, training_type, result, moves,
-                             agent.updates, eval_rate, eval_speed,
-                             time.perf_counter() - start])
-
+            writer.writerow([episode, epsilon, training_type, result, moves, agent.updates,
+                             eval_rate, eval_speed, time.perf_counter() - start])
             now = time.perf_counter()
-            save_due = (
-                (save_interval and now >= next_save) or
-                (not duration and episode % args.save_every == 0)
-            )
+            save_due = ((save_interval and now >= next_save) or
+                        (not duration and episode % args.save_every == 0))
             if save_due:
                 agent.save(args.output, episode)
                 file.flush()
@@ -530,20 +543,20 @@ def train(args):
                     next_save = time.perf_counter() + save_interval
 
         if episode and last_eval_episode != episode:
-            result_eval = evaluate(agent, args.eval_games, args.seed + 9000000 + episode)
-            print(f"Final evaluation | tactical opponent "
-                  f"{result_eval['wins']}W/{result_eval['draws']}D/"
-                  f"{result_eval['losses']}L | "
-                  f"{result_eval['games_per_second']:.0f} eval games/s", flush=True)
-            writer.writerow([episode, args.epsilon_end, "evaluation", "", 0,
-                             agent.updates, result_eval["win_rate"],
-                             result_eval["games_per_second"],
+            result_eval = evaluate(agent, args.eval_games, args.eval_seed, args.search_depth)
+            print(f"Final evaluation | tactical opponent {result_eval['wins']}W/"
+                  f"{result_eval['draws']}D/{result_eval['losses']}L", flush=True)
+            writer.writerow([episode, args.epsilon_end, "evaluation", "", 0, agent.updates,
+                             result_eval["win_rate"], result_eval["games_per_second"],
                              time.perf_counter() - start])
+            if result_eval["points"] > best_score:
+                best_agent.weights[:] = agent.weights
+                best_agent.updates = agent.updates
+                best_agent.save(args.best_output, episode)
 
         agent.save(args.output, episode)
         file.flush()
     print(f"Training finished after {episode} episodes.", flush=True)
-
 
 def main():
     parser = argparse.ArgumentParser()
@@ -563,6 +576,8 @@ def main():
     parser.add_argument("--resume", default="")
     parser.add_argument("--output", default="models/connect4_ntuple.npz")
     parser.add_argument("--log", default="training_connect4.csv")
+    parser.add_argument("--best-output", default="models/candidates/best.npz")
+    parser.add_argument("--eval-seed", type=int, default=100000)
     args = parser.parse_args()
     if (args.games < 1 or args.eval_every < 1 or args.eval_games < 1 or
             args.time_limit_minutes < 0 or args.eval_every_minutes < 0 or
