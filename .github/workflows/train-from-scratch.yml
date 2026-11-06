@@ -2,11 +2,6 @@ name: Train From Scratch
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/train-from-scratch.yml
 
 permissions:
   contents: read
@@ -33,7 +28,7 @@ jobs:
 
       - name: Train a fresh one-ply model
         run: |
-          python main.py --games 100000000 --time-limit-minutes 345 --search-depth 1 --alpha 0.02 --epsilon-start 0.25 --epsilon-end 0.02 --eval-every-minutes 30 --eval-games 50 --save-every-minutes 5 --seed "$GITHUB_RUN_NUMBER" --output models/candidates/ntuple-one-ply.npz --log training_from_scratch.csv
+          python main.py --games 100000000 --time-limit-minutes 345 --search-depth 2 --alpha 0.02 --epsilon-start 0.25 --epsilon-end 0.02 --eval-every-minutes 30 --eval-games 100 --eval-seed 100000 --save-every-minutes 5 --seed "$GITHUB_RUN_NUMBER" --output models/candidates/latest.npz --best-output models/candidates/best.npz --log training_from_scratch.csv
 
       - name: Save candidate and training history
         if: always()
@@ -41,7 +36,8 @@ jobs:
         with:
           name: connect-four-from-scratch
           path: |
-            models/candidates/ntuple-one-ply.npz
+            models/candidates/latest.npz
+            models/candidates/best.npz
             training_from_scratch.csv
           if-no-files-found: warn
           retention-days: 90
