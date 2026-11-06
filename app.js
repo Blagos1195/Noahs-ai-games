@@ -261,10 +261,13 @@ function startGame(resetScores = false) {
       resetPythonGame();
       if (mode === "ai" && currentPlayer === aiPlayer) makeAIMove();
     }
-  }).catch(() => {
-    statusHeading.textContent = "The game engine couldn't load.";
-    nextTitle.textContent = "Python unavailable";
-    nextCopy.textContent = "Check the connection and refresh the page.";
+  }).catch(error => {
+    console.error(error);
+    statusHeading.textContent = "The game engine couldn't start.";
+    roundLabel.textContent = "AI ERROR";
+    nextTitle.textContent = "Game setup failed";
+    nextCopy.textContent = error?.message || String(error);
+    setModelStatus("Setup error: " + (error?.message || String(error)));
   });
 }
 
