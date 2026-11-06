@@ -144,7 +144,7 @@ function updateModeLabels() {
   scoreXName.textContent = aiMode ? aiPlayer === "X" ? "AI" : "YOU" : "PLAYER 1";
   scoreOName.textContent = aiMode ? aiPlayer === "O" ? "AI" : "YOU" : "PLAYER 2";
   opponentName.textContent = aiMode ? "AI" : "Player 2";
-  scoreX.parentElement.querySelector(".score-disc").className = `score-disc ${aiMode && aiPlayer === "O" ? "o-disc" : "x-disc"}`;
+  scoreX.parentElement.querySelector(".score-disc").className = `score-disc ${aiMode && aiPlayer === "X" ? "o-disc" : "x-disc"}`;
   scoreO.parentElement.querySelector(".score-disc").className = `score-disc ${aiMode && aiPlayer === "X" ? "x-disc" : "o-disc"}`;
   nextTitle.textContent = aiMode ? currentPlayer === aiPlayer ? "AI turn" : "Your move" : `Player ${currentPlayer === "X" ? "1" : "2"} starts`;
   nextCopy.textContent = aiMode ? `You play ${aiPlayer === "X" ? "yellow" : "red"}. The AI plays ${aiPlayer === "X" ? "red" : "yellow"}.` : "Take turns dropping counters into the board.";
