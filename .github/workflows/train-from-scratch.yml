@@ -2,6 +2,11 @@ name: Train From Scratch
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/train-from-scratch.yml
 
 permissions:
   contents: read
@@ -26,7 +31,7 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Train a fresh one-ply model
+      - name: Train a fresh depth-two model
         run: |
           python main.py --games 100000000 --time-limit-minutes 345 --search-depth 2 --alpha 0.02 --epsilon-start 0.25 --epsilon-end 0.02 --eval-every-minutes 30 --eval-games 100 --eval-seed 100000 --save-every-minutes 5 --seed "$GITHUB_RUN_NUMBER" --output models/candidates/latest.npz --best-output models/candidates/best.npz --log training_from_scratch.csv
 
