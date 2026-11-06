@@ -100,10 +100,9 @@ def _pattern_indices(current, opponent, heights, patterns):
     for p in range(patterns.shape[0]):
         idx = 0
         for j in range(8):
-            cell = patterns[p, j]
-            r = cell // COLS
-            c = cell % COLS
-            bit = 1 << (c * STRIDE + (ROWS - 1 - r))
+            cell = int(patterns[p, j])
+            r, c = divmod(cell, COLS)
+            bit = int(1 << (c * STRIDE + (ROWS - 1 - r)))
             value = 0
             if current & bit:
                 value = 1
