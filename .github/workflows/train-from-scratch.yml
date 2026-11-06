@@ -2,11 +2,6 @@ name: Train From Scratch
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/train-from-scratch.yml
 
 permissions:
   contents: read
