@@ -15,6 +15,8 @@ const scoreDraw = document.querySelector("#score-draw");
 const scoreXName = document.querySelector("#score-x-name");
 const scoreOName = document.querySelector("#score-o-name");
 const opponentName = document.querySelector("#opponent-name");
+const secretHintButton = document.querySelector("#secret-hint");
+
 
 let mode = "ai";
 let currentPlayer = "X";
@@ -27,6 +29,9 @@ let aiLoading = null;
 let gameVersion = 0;
 let board = Array(42).fill("");
 let winningLine = [];
+let hintColumn = null;
+let hintForPlayer = null;
+const hintEnabled = { X: false, O: false };
 const scores = { you: 0, ai: 0, player1: 0, player2: 0, draw: 0 };
 
 function otherPlayer(player) {
@@ -127,7 +132,11 @@ function render() {
   columnButtons.forEach((button, col) => {
     const full = engineReady && board.filter((_, index) => index % 7 === col).every(Boolean);
     button.disabled = !engineReady || gameOver || aiBusy || full || (mode === "ai" && currentPlayer === aiPlayer);
+    button.classList.toggle("hinted", mode === "pvp" && hintForPlayer === currentPlayer &&
+      hintEnabled[currentPlayer] && hintColumn === col && !gameOver);
   });
+  secretHintButton.hidden = mode !== "pvp";
+  secretHintButton.classList.toggle("active", mode === "pvp" && hintEnabled[currentPlayer]);
 
   scoreX.textContent = mode === "ai" ? scores.you : scores.player1;
   scoreO.textContent = mode === "ai" ? scores.ai : scores.player2;
@@ -137,6 +146,22 @@ function render() {
   turnLabel.textContent = mode === "ai"
     ? currentPlayer === "X" ? "YOUR MOVE" : "AI THINKING"
     : `PLAYER ${currentPlayer === "X" ? "1" : "2"}`;
+}
+
+function refreshHint() {
+  hintColumn = null;
+  hintForPlayer = null;
+  if (mode !== "pvp" || !hintEnabled[currentPlayer] || gameOver || !engineReady) return;
+  try {
+    const action = Number(pyodide.runPython("browser_agent.choose_action(browser_game, 0.0)"));
+    if (Number.isInteger(action) && action >= 0 && action < 7 &&
+        board.filter((_, index) => index % 7 === action).some(value => !value)) {
+      hintColumn = action;
+      hintForPlayer = currentPlayer;
+    }
+  } catch (error) {
+    console.warn("Could not calculate move hint.", error);
+  }
 }
 
 function updateModeLabels() {
@@ -198,6 +223,7 @@ function playColumn(column) {
   const mover = currentPlayer;
   currentPlayer = otherPlayer(currentPlayer);
   board = pythonBoard();
+  refreshHint();
 
   if (won) finishGame(mover);
   else if (draw) finishGame(null);
@@ -251,6 +277,10 @@ function startGame(resetScores = false) {
   gameOver = false;
   aiBusy = false;
   winningLine = [];
+  hintColumn = null;
+  hintForPlayer = null;
+  hintEnabled.X = false;
+  hintEnabled.O = false;
   if (resetScores) {
     scores.you = 0;
     scores.ai = 0;
@@ -297,6 +327,13 @@ modeButtons.forEach(button => {
     });
     startGame(true);
   });
+});
+
+secretHintButton.addEventListener("click", () => {
+  if (mode !== "pvp" || gameOver || aiBusy || !engineReady) return;
+  hintEnabled[currentPlayer] = !hintEnabled[currentPlayer];
+  refreshHint();
+  render();
 });
 
 document.querySelector("#new-game").addEventListener("click", () => startGame());
