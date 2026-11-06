@@ -46,7 +46,7 @@ function loadAI() {
     setModelStatus("Loading Python runtime...");
     const [runtime, response] = await Promise.all([
       loadPyodide(),
-      fetch("connect4_ntuple.py")
+      fetch("connect4_ntuple.py?v=60c319a")
     ]);
     if (!response.ok) throw new Error("Could not load connect4_ntuple.py");
     const pythonSource = await response.text();
