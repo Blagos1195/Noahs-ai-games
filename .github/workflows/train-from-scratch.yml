@@ -1,0 +1,46 @@
+name: Train From Scratch
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/train-from-scratch.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: connect-four-from-scratch
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Train a fresh one-ply model
+        run: |
+          python main.py --games 100000000 --time-limit-minutes 345 --search-depth 1 --alpha 0.02 --epsilon-start 0.25 --epsilon-end 0.02 --eval-every-minutes 30 --eval-games 50 --save-every-minutes 5 --seed "$GITHUB_RUN_NUMBER" --output models/candidates/ntuple-one-ply.npz --log training_from_scratch.csv
+
+      - name: Save candidate and training history
+        uses: actions/upload-artifact@v4
+        with:
+          name: connect-four-from-scratch
+          path: |
+            models/candidates/ntuple-one-ply.npz
+            training_from_scratch.csv
+          if-no-files-found: error
+          retention-days: 90
