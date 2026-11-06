@@ -447,12 +447,12 @@ def train(args):
             if (episode + args.seed) % 5 < 3:
                 winner, moves = play_episode(agent, epsilon, True, args.seed + episode,
                                              args.search_depth)
-                training_type = "self-play"
+                training_type = "search-self-play" if args.search_depth > 1 else "self-play"
                 result = "draw" if winner is None else ("first" if winner == 0 else "second")
             else:
                 won, moves = play_tactical_episode(agent, epsilon, args.seed + episode,
                                                    args.search_depth)
-                training_type = "tactical"
+                training_type = "search-tactical" if args.search_depth > 1 else "tactical"
                 result = "draw" if won is None else ("win" if won else "loss")
 
             now = time.perf_counter()
