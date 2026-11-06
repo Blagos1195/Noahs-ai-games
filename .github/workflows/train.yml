@@ -46,7 +46,7 @@ jobs:
       - name: Publish model
         run: |
           git config user.name "github-actions[bot]"
-          git config user.email "41898282+users.noreply.github.com"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           MODEL_BACKUP="$RUNNER_TEMP/connect4_ntuple.npz"
           cp models/connect4_ntuple.npz "$MODEL_BACKUP"
           for attempt in 1 2 3; do
