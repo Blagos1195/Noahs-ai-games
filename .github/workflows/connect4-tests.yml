@@ -17,4 +17,4 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - run: pytest -q
-      - run: python main.py --games 20 --eval-every 20 --eval-games 10 --save-every 20 --output /tmp/connect4-smoke.npz --log /tmp/connect4-smoke.csv
+      - run: python main.py --games 20 --search-depth 4 --eval-every 20 --eval-games 10 --save-every 20 --output /tmp/connect4-smoke.npz --log /tmp/connect4-smoke.csv
