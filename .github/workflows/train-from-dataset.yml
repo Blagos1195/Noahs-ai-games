@@ -1,0 +1,92 @@
+name: Train From Connect Four Dataset
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/train-from-dataset.yml"
+      - "scripts/train_from_dataset.py"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: connect-four-dataset-training
+  cancel-in-progress: false
+
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Download the labelled Connect Four dataset
+        run: |
+          python - <<'PY'
+          import json
+          import urllib.request
+
+          metadata_url = "https://zenodo.org/api/records/17578932"
+          with urllib.request.urlopen(metadata_url, timeout=60) as response:
+              metadata = json.load(response)
+
+          files = metadata.get("files", [])
+          csv_files = [item for item in files if item.get("key", "").lower().endswith(".csv")]
+          preferred = [
+              item for item in csv_files
+              if "move" in item.get("key", "").lower()
+              or "optimal" in item.get("key", "").lower()
+              or "best" in item.get("key", "").lower()
+          ]
+          candidates = preferred or csv_files
+          if not candidates:
+              raise SystemExit("No CSV files found in Zenodo record. Available files: " +
+                               ", ".join(item.get("key", "") for item in files))
+          selected = max(candidates, key=lambda item: item.get("size", 0))
+          print(f"Selected dataset: {selected['key']} ({selected.get('size', 0):,} bytes)")
+          print(f"Dataset DOI: {metadata.get('doi', 'not supplied')}")
+          download_url = selected.get("links", {}).get("self")
+          if not download_url:
+              raise SystemExit("Selected CSV has no download URL")
+          request = urllib.request.Request(download_url, headers={"User-Agent": "connect4-training/1.0"})
+          with urllib.request.urlopen(request, timeout=300) as response, open("connect4_dataset.csv", "wb") as output:
+              while True:
+                  chunk = response.read(1024 * 1024)
+                  if not chunk:
+                      break
+                  output.write(chunk)
+          print("Dataset download complete.")
+          PY
+
+      - name: Learn from engine-labelled positions
+        run: |
+          python scripts/train_from_dataset.py --dataset connect4_dataset.csv --model models/connect4_ntuple.npz --output models/candidates/dataset-pretrained.npz --epochs 3 --learning-rate 0.00008 --temperature 0.25
+
+      - name: Fine-tune through self-play and tactical opponents
+        run: |
+          python main.py --games 100000000 --time-limit-minutes 330 --search-depth 2 --alpha 0.02 --epsilon-start 0.25 --epsilon-end 0.02 --eval-every-minutes 30 --eval-games 100 --eval-seed 100000 --save-every-minutes 5 --seed "$GITHUB_RUN_NUMBER" --resume models/candidates/dataset-pretrained.npz --output models/candidates/latest.npz --best-output models/candidates/best.npz --log training_from_dataset.csv
+
+      - name: Save candidate and training history
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: connect-four-dataset-trained
+          path: |
+            models/candidates/dataset-pretrained.npz
+            models/candidates/latest.npz
+            models/candidates/best.npz
+            training_from_dataset.csv
+          if-no-files-found: warn
+          retention-days: 90
