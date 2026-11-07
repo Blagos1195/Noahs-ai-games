@@ -35,15 +35,11 @@ def train_epoch(currents, opponents, heights_all, labels, weights, learning_rate
                 next_opponent = current | bit
                 next_heights = heights.copy()
                 next_heights[col] += 1
-                if has_won(current | bit):
-                    score = 100000.0
-                    idx = _pattern_indices(next_current, next_opponent, next_heights, PATTERNS)
-                else:
-                    idx = _pattern_indices(next_current, next_opponent, next_heights, PATTERNS)
-                    value = 0.0
-                    for p in range(PATTERNS.shape[0]):
-                        value += weights[p, idx[p]]
-                    score = -value
+                idx = _pattern_indices(next_current, next_opponent, next_heights, PATTERNS)
+                value = 0.0
+                for p in range(PATTERNS.shape[0]):
+                    value += weights[p, idx[p]]
+                score = 100000.0 if has_won(current | bit) else -value
                 actions[action_count] = col
                 scores[action_count] = score
                 indices[action_count] = idx
@@ -68,8 +64,9 @@ def train_epoch(currents, opponents, heights_all, labels, weights, learning_rate
             probability = probabilities[a] / exp_sum
             target = 1.0 if actions[a] == label else 0.0
             gradient = probability - target
-            for p in range(PATTERNS.shape[0]):
-                weights[p, indices[a, p]] += learning_rate * gradient
+            if not has_won(current | (1 << (int(actions[a]) * STRIDE + int(heights[int(actions[a])])))):
+                for p in range(PATTERNS.shape[0]):
+                    weights[p, indices[a, p]] += learning_rate * gradient
     return correct / max(total, 1)
 
 
@@ -88,12 +85,9 @@ def load_dataset(path):
         player_column = columns.get("playertomove")
         if board_column is None or player_column is None:
             raise ValueError(f"Missing board_flat/player_to_move columns: {reader.fieldnames}")
-        label_column = None
-        for name in ("9ply", "7ply", "5ply", "3ply", "velenastrong"):
-            if name in columns:
-                label_column = columns[name]
-                break
-        if label_column is None:
+        label_columns = [columns[name] for name in ("9ply", "7ply", "5ply", "3ply", "velenastrong")
+                         if name in columns]
+        if not label_columns:
             raise ValueError("No supported move-label column found")
 
         for row in reader:
@@ -104,8 +98,16 @@ def load_dataset(path):
                 player = int(row[player_column])
                 if player not in (1, 2):
                     raise ValueError
-                label = int(row[label_column])
-                if not 0 <= label < COLS:
+                label = -1
+                for column in label_columns:
+                    try:
+                        candidate = int(row[column])
+                    except (ValueError, TypeError):
+                        continue
+                    if 0 <= candidate < COLS:
+                        label = candidate
+                        break
+                if label < 0:
                     raise ValueError
 
                 current = 0
