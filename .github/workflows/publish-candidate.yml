@@ -1,9 +1,7 @@
 name: Publish Connect Four Candidate
 
 on:
-  push:
-    paths:
-      - ".github/workflows/publish-candidate.yml"
+  workflow_dispatch:
 
 permissions:
   actions: read
