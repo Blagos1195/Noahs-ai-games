@@ -1,0 +1,51 @@
+name: Publish Connect Four Candidate
+
+on:
+  push:
+    paths:
+      - ".github/workflows/publish-candidate.yml"
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: connect-four-publish-candidate
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Download validated candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: connect-four-from-scratch
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 42315318730
+          path: candidate
+
+      - name: Publish best checkpoint
+        run: |
+          test -s candidate/models/candidates/best.npz
+          cp candidate/models/candidates/best.npz models/connect4_ntuple.npz
+          python - <<'PY'
+          import numpy as np
+          with np.load("models/connect4_ntuple.npz", allow_pickle=False) as data:
+              weights = data["weights"]
+              assert weights.shape == (70, 6561), weights.shape
+              print(f"Validated model weights: {weights.shape}")
+              print(f"Training updates: {int(data['updates'])}")
+              print(f"Training episodes: {int(data['episodes'])}")
+          PY
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add models/connect4_ntuple.npz
+          git commit -m "Publish validated depth-two Connect Four model"
+          git push origin HEAD:main
