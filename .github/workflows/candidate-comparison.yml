@@ -2,6 +2,9 @@ name: Compare Connect Four Models
 
 on:
   workflow_dispatch:
+  push:
+    paths:
+      - "scripts/compare_candidates.py"
 
 permissions:
   actions: read
