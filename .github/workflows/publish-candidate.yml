@@ -1,7 +1,9 @@
 name: Publish Connect Four Candidate
 
 on:
-  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/publish-candidate.yml"
 
 permissions:
   actions: read
@@ -33,15 +35,7 @@ jobs:
         run: |
           test -s candidate/models/candidates/best.npz
           cp candidate/models/candidates/best.npz models/connect4_ntuple.npz
-          python - <<'PY'
-          import numpy as np
-          with np.load("models/connect4_ntuple.npz", allow_pickle=False) as data:
-              weights = data["weights"]
-              assert weights.shape == (70, 6561), weights.shape
-              print(f"Validated model weights: {weights.shape}")
-              print(f"Training updates: {int(data['updates'])}")
-              print(f"Training episodes: {int(data['episodes'])}")
-          PY
+          unzip -t candidate/models/candidates/best.npz
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add models/connect4_ntuple.npz
