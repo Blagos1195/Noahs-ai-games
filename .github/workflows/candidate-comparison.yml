@@ -1,0 +1,48 @@
+name: Compare Connect Four Models
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "scripts/compare_candidates.py"
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - run: pip install -r requirements.txt
+
+      - name: Download the completed training candidate
+        uses: actions/download-artifact@v4
+        with:
+          name: connect-four-from-scratch
+          github-token: ${{ github.token }}
+          repository: ${{ github.repository }}
+          run-id: 42315318730
+          path: artifacts
+
+      - name: Compare candidate with published model
+        run: |
+          python scripts/compare_candidates.py --candidate artifacts/models/candidates/best.npz --champion models/connect4_ntuple.npz --games 1000 --depth 2 --seed 700000
+
+      - name: Save comparison report
+        uses: actions/upload-artifact@v4
+        with:
+          name: connect-four-model-comparison
+          path: comparison.json
+          if-no-files-found: error
+          retention-days: 90
