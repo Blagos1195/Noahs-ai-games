@@ -32,42 +32,53 @@ jobs:
 
       - run: pip install -r requirements.txt
 
-      - name: Download the labelled Connect Four dataset
+      - name: Download and extract the labelled Connect Four dataset
         run: |
           python - <<'PY'
           import json
           import urllib.request
+          import zipfile
 
           metadata_url = "https://zenodo.org/api/records/17578932"
           with urllib.request.urlopen(metadata_url, timeout=60) as response:
               metadata = json.load(response)
 
           files = metadata.get("files", [])
-          csv_files = [item for item in files if item.get("key", "").lower().endswith(".csv")]
-          preferred = [
-              item for item in csv_files
-              if "move" in item.get("key", "").lower()
-              or "optimal" in item.get("key", "").lower()
-              or "best" in item.get("key", "").lower()
+          archives = [
+              item for item in files
+              if item.get("key", "").lower().endswith(".zip")
+              and "optimal" in item.get("key", "").lower()
           ]
-          candidates = preferred or csv_files
-          if not candidates:
-              raise SystemExit("No CSV files found in Zenodo record. Available files: " +
+          if not archives:
+              raise SystemExit("Optimal move dataset archive not found. Available files: " +
                                ", ".join(item.get("key", "") for item in files))
-          selected = max(candidates, key=lambda item: item.get("size", 0))
-          print(f"Selected dataset: {selected['key']} ({selected.get('size', 0):,} bytes)")
+          selected = max(archives, key=lambda item: item.get("size", 0))
+          print(f"Selected archive: {selected['key']} ({selected.get('size', 0):,} bytes)")
           print(f"Dataset DOI: {metadata.get('doi', 'not supplied')}")
           download_url = selected.get("links", {}).get("self")
           if not download_url:
-              raise SystemExit("Selected CSV has no download URL")
+              raise SystemExit("Selected archive has no download URL")
           request = urllib.request.Request(download_url, headers={"User-Agent": "connect4-training/1.0"})
-          with urllib.request.urlopen(request, timeout=300) as response, open("connect4_dataset.csv", "wb") as output:
+          with urllib.request.urlopen(request, timeout=300) as response, open("connect4_dataset.zip", "wb") as output:
               while True:
                   chunk = response.read(1024 * 1024)
                   if not chunk:
                       break
                   output.write(chunk)
-          print("Dataset download complete.")
+
+          with zipfile.ZipFile("connect4_dataset.zip") as archive:
+              csv_files = [item for item in archive.infolist() if item.filename.lower().endswith(".csv")]
+              if not csv_files:
+                  raise SystemExit("No CSV found in archive: " + ", ".join(archive.namelist()))
+              selected_csv = max(csv_files, key=lambda item: item.file_size)
+              print(f"Extracting {selected_csv.filename} ({selected_csv.file_size:,} bytes)")
+              with archive.open(selected_csv) as source, open("connect4_dataset.csv", "wb") as output:
+                  while True:
+                      chunk = source.read(1024 * 1024)
+                      if not chunk:
+                          break
+                      output.write(chunk)
+          print("Dataset download and extraction complete.")
           PY
 
       - name: Learn from engine-labelled positions
