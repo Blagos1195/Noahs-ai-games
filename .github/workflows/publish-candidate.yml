@@ -1,7 +1,9 @@
 name: Publish Connect Four Candidate
 
 on:
-  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/publish-candidate.yml"
 
 permissions:
   actions: read
@@ -36,6 +38,18 @@ jobs:
           unzip -t candidate/models/candidates/best.npz
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add models/connect4_ntuple.npz
-          git commit -m "Publish validated depth-two Connect Four model"
-          git push origin HEAD:main
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git reset --hard origin/main
+            cp candidate/models/candidates/best.npz models/connect4_ntuple.npz
+            git add models/connect4_ntuple.npz
+            if git diff --cached --quiet; then
+              echo "Candidate is already published."
+              exit 0
+            fi
+            git commit -m "Publish validated depth-two Connect Four model"
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+          done
+          exit 1
